@@ -24,7 +24,7 @@ logger.add(sys.stderr, level="INFO")
 
 from src.bot.signals.momentum_pullback import MomentumPullbackStrategy
 from src.bot.signals.momentum_surge import MomentumSurgeStrategy
-from src.data.indicators import macd, rsi, atr
+from src.data.indicators import rsi, atr
 
 
 def fetch_bars(symbol: str, period: str = "5d", interval: str = "5m") -> pd.DataFrame:
@@ -176,7 +176,6 @@ def main():
     )
 
     surge = MomentumSurgeStrategy(
-        macd_fast=8, macd_slow=21, macd_signal=5,
         atr_period=14, atr_stop_multiplier=2.0,
         volume_multiplier=3.0, roc_min=0.03,
         risk_reward_target=10.0, min_signal_strength=0.5,

@@ -4,12 +4,12 @@ Momentum Pullback Strategy for day trading.
 Implements Ross Cameron's approach:
 - Trade low-float, high-volume momentum stocks ($1-$10, prefer $2+)
 - Enter on the first pullback after an initial surge
-- MACD must be positive (above zero line) on 5-min chart
+- Price must be above VWAP (institutional fair value = trend is bullish)
 - Volume confirmation: green candle volume > pullback avg volume
 - Target: 2x risk/reward, tight trailing stop
 
 Entry conditions (all must pass):
-1. MACD > 0 on 5-min chart (above zero line = trend is bullish)
+1. Price above VWAP (trading above institutional fair value)
 2. Pullback detected: surge → 2-15 lower/red candles → first green new high
 3. Pullback retracement < 65% of surge height
 4. Entry candle volume >= average of pullback candles
@@ -17,19 +17,20 @@ Entry conditions (all must pass):
 6. Target = stop distance × risk_reward_target
 
 Exit conditions:
-1. MACD crosses below zero line (momentum died)
-2. 3 consecutive declining histogram bars (fading)
-3. Stop/target/trailing handled by position monitor
+1. 2 consecutive bar closes below VWAP (momentum fading)
+2. Stop/target/trailing handled by position monitor
 """
 
 import logging
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from src.bot.signals.base import Signal, SignalDirection, SignalGenerator
-from src.data.indicators import macd as calc_macd, atr as calc_atr
+from src.bot.signals.momentum_surge import calculate_vwap
+from src.data.indicators import atr as calc_atr
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,11 @@ class MomentumPullbackStrategy(SignalGenerator):
 
     Looks for stocks that have surged (already up big on the day),
     waits for a pullback, and enters on the first candle that makes
-    a new high after the pullback — but ONLY when MACD is positive.
+    a new high after the pullback — but ONLY when price is above VWAP.
     """
 
     def __init__(
         self,
-        macd_fast: int = 12,
-        macd_slow: int = 26,
-        macd_signal: int = 9,
         atr_period: int = 14,
         atr_stop_multiplier: float = 1.5,
         pullback_min_candles: int = 2,
@@ -56,27 +54,12 @@ class MomentumPullbackStrategy(SignalGenerator):
         volume_entry_multiplier: float = 1.0,
         risk_reward_target: float = 2.0,
         min_signal_strength: float = 0.5,
+        # Accept but ignore legacy MACD params for backward compat
+        macd_fast: int = 12,
+        macd_slow: int = 26,
+        macd_signal: int = 9,
     ):
-        """
-        Initialize momentum pullback strategy.
-
-        Args:
-            macd_fast: MACD fast EMA period (12 standard)
-            macd_slow: MACD slow EMA period (26 standard)
-            macd_signal: MACD signal line period (9 standard)
-            atr_period: ATR period for stop sizing
-            atr_stop_multiplier: ATR multiplier for stop (1.5 = tighter for day trading)
-            pullback_min_candles: Min candles in pullback before entry (2)
-            pullback_max_candles: Max candles in pullback (8, beyond = momentum lost)
-            pullback_max_retracement: Max pullback depth as % of surge (0.50 = 50%)
-            volume_entry_multiplier: Entry candle vol must be > pullback avg × this (1.2)
-            risk_reward_target: Take-profit = stop_distance × this (2.0)
-            min_signal_strength: Minimum strength to generate signal (0.5)
-        """
         super().__init__(name="momentum_pullback")
-        self.macd_fast = macd_fast
-        self.macd_slow = macd_slow
-        self.macd_signal = macd_signal
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.pullback_min_candles = pullback_min_candles
@@ -86,8 +69,8 @@ class MomentumPullbackStrategy(SignalGenerator):
         self.risk_reward_target = risk_reward_target
         self.min_signal_strength = min_signal_strength
 
-        # Minimum bars needed for all indicators
-        self.min_bars = max(macd_slow + macd_signal + 10, atr_period + 10, 40)
+        # VWAP needs 1 bar, ATR needs atr_period, pullback detection needs 40
+        self.min_bars = max(atr_period + 10, 40)
 
     def generate(
         self,
@@ -115,27 +98,22 @@ class MomentumPullbackStrategy(SignalGenerator):
         bars = self.normalize_bars(bars)
         price = current_price or float(bars["close"].iloc[-1])
 
-        # ── Step 1: Calculate MACD ──────────────────────────────────────
-        macd_line, signal_line, histogram = calc_macd(
-            bars["close"],
-            fast_period=self.macd_fast,
-            slow_period=self.macd_slow,
-            signal_period=self.macd_signal,
-        )
+        # ── Step 1: Calculate VWAP ──────────────────────────────────────
+        vwap_values = calculate_vwap(bars)
+        cur_vwap = float(vwap_values.iloc[-1])
 
-        current_macd = float(macd_line.iloc[-1])
-        current_signal = float(signal_line.iloc[-1])
-        current_histogram = float(histogram.iloc[-1])
-
-        # ── Step 2: MACD must be ABOVE ZERO LINE ───────────────────────
-        # This is the PRIMARY filter — trend must be bullish
-        if current_macd <= 0:
-            logger.debug(f"[{symbol}] MACD below zero ({current_macd:.4f}), skip")
+        # ── Step 2: Price must be above VWAP ─────────────────────────────
+        if np.isnan(cur_vwap) or cur_vwap <= 0:
+            logger.debug(f"[{symbol}] VWAP unavailable")
             return None
 
-        # Note: We do NOT require MACD > signal here. During a pullback,
-        # MACD naturally dips below the signal line — that's what a pullback IS.
-        # We only need MACD > 0 to confirm the overall trend is bullish.
+        if price <= cur_vwap:
+            logger.debug(
+                f"[{symbol}] price ${price:.2f} below VWAP ${cur_vwap:.2f}, skip"
+            )
+            return None
+
+        price_vs_vwap = (price - cur_vwap) / cur_vwap
 
         # ── Step 3: Detect pullback pattern ────────────────────────────
         pullback = self._detect_pullback(bars)
@@ -198,12 +176,9 @@ class MomentumPullbackStrategy(SignalGenerator):
 
         # ── Step 6: Calculate signal strength ──────────────────────────
         strength = self._calculate_strength(
-            macd_value=current_macd,
-            histogram=current_histogram,
+            price_vs_vwap=price_vs_vwap,
             volume_ratio=volume_ratio,
             pullback_depth_pct=pullback["retracement_pct"],
-            atr_value=atr_value,
-            price=price,
             has_catalyst=has_catalyst,
         )
 
@@ -223,9 +198,8 @@ class MomentumPullbackStrategy(SignalGenerator):
             timeframe="5Min",
             metadata={
                 "system": "momentum_pullback",
-                "macd": round(current_macd, 4),
-                "signal": round(current_signal, 4),
-                "histogram": round(current_histogram, 4),
+                "vwap": round(cur_vwap, 4),
+                "price_vs_vwap": round(price_vs_vwap * 100, 2),
                 "atr": round(atr_value, 4),
                 "surge_high": round(surge_high, 2),
                 "pullback_low": round(pullback_low, 2),
@@ -256,51 +230,32 @@ class MomentumPullbackStrategy(SignalGenerator):
         """
         Check if momentum has died and position should exit.
 
-        Exit when:
-        1. MACD crosses below zero line (momentum completely dead)
-        2. 3 consecutive declining histogram bars (momentum fading fast)
+        Exit when 2 consecutive bar closes below VWAP (momentum fading).
 
         Note: Stop-loss, take-profit, and trailing stop are handled by
         the PositionMonitor separately.
-
-        Args:
-            symbol: Stock symbol
-            bars: Recent 5-min OHLCV DataFrame
-            entry_price: Position entry price
-            direction: Position direction (always LONG for this strategy)
-            current_price: Current price
-
-        Returns:
-            (should_exit, reason) tuple
         """
         if not self.validate_bars(bars, self.min_bars):
             return False, None
 
         bars = self.normalize_bars(bars)
+        close = bars["close"]
 
-        # Calculate MACD
-        macd_line, signal_line, histogram = calc_macd(
-            bars["close"],
-            fast_period=self.macd_fast,
-            slow_period=self.macd_slow,
-            signal_period=self.macd_signal,
-        )
-
-        current_macd = float(macd_line.iloc[-1])
-        current_histogram = float(histogram.iloc[-1])
-
-        # Exit 1: MACD crosses below zero (momentum is dead)
-        if current_macd < 0:
-            prev_macd = float(macd_line.iloc[-2])
-            if prev_macd >= 0:  # Just crossed below
-                return True, "MACD crossed below zero line (momentum dead)"
-
-        # Exit 2: 3 consecutive declining histogram bars (momentum fading)
-        if len(histogram) >= 4:
-            h_vals = [float(histogram.iloc[i]) for i in range(-4, 0)]
-            declining = all(h_vals[i] > h_vals[i + 1] for i in range(3))
-            if declining and current_histogram < 0:
-                return True, "3 declining histogram bars with negative histogram"
+        # VWAP exit — 2 consecutive bar closes below VWAP
+        vwap_values = calculate_vwap(bars)
+        if len(close) >= 2:
+            cur_close = float(close.iloc[-1])
+            prev_close = float(close.iloc[-2])
+            cur_vwap = float(vwap_values.iloc[-1])
+            prev_vwap = float(vwap_values.iloc[-2])
+            if (
+                not np.isnan(cur_vwap) and not np.isnan(prev_vwap)
+                and cur_close < cur_vwap and prev_close < prev_vwap
+            ):
+                return True, (
+                    f"2 bars below VWAP "
+                    f"(${prev_close:.2f}<${prev_vwap:.2f}, ${cur_close:.2f}<${cur_vwap:.2f})"
+                )
 
         return False, None
 
@@ -426,49 +381,19 @@ class MomentumPullbackStrategy(SignalGenerator):
 
     def _calculate_strength(
         self,
-        macd_value: float,
-        histogram: float,
+        price_vs_vwap: float,
         volume_ratio: float,
         pullback_depth_pct: float,
-        atr_value: float,
-        price: float,
         has_catalyst: bool = False,
     ) -> float:
-        """
-        Calculate signal strength (0.0 to 1.0).
-
-        Higher strength when:
-        - MACD is strongly positive
-        - Histogram is increasing
-        - Volume is high on entry candle
-        - Pullback was shallow (momentum still strong)
-        - News catalyst present (confirmation, not requirement)
-
-        Args:
-            macd_value: Current MACD line value
-            histogram: Current histogram value
-            volume_ratio: Entry candle volume / pullback avg volume
-            pullback_depth_pct: Pullback retracement as decimal (0.0-1.0)
-            atr_value: Current ATR value
-            price: Current price
-            has_catalyst: Whether the stock has a news catalyst
-
-        Returns:
-            Signal strength between 0.0 and 1.0
-        """
+        """Calculate signal strength (0.0 to 1.0)."""
         strength = 0.5  # Base strength
 
-        # MACD strength: stronger MACD = more confidence
-        # Normalize MACD relative to ATR for comparability across price ranges
-        if atr_value > 0:
-            macd_strength = min(abs(macd_value) / atr_value, 1.0) * 0.15
-        else:
-            macd_strength = 0.0
-        strength += macd_strength
-
-        # Histogram momentum: positive and increasing = good
-        if histogram > 0:
-            strength += 0.05
+        # VWAP deviation: price well above VWAP = strong trend
+        if price_vs_vwap > 0.02:
+            strength += 0.15
+        elif price_vs_vwap > 0.01:
+            strength += 0.10
 
         # Volume: higher relative volume on entry = more conviction
         if volume_ratio >= 3.0:
@@ -480,13 +405,12 @@ class MomentumPullbackStrategy(SignalGenerator):
 
         # Shallow pullback = momentum still strong
         if pullback_depth_pct < 0.25:
-            strength += 0.10  # Very shallow pullback
+            strength += 0.10
         elif pullback_depth_pct < 0.35:
-            strength += 0.05  # Moderate pullback
+            strength += 0.05
 
-        # News catalyst: boosts confidence but not required
+        # News catalyst
         if has_catalyst:
             strength += 0.10
 
-        # Clamp to [0, 1]
         return max(0.0, min(1.0, strength))

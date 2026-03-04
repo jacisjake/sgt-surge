@@ -2,29 +2,50 @@
 Momentum Surge Strategy for day trading.
 
 Enters on the initial surge — no pullback required. For stocks that are
-actively breaking out with strong momentum, volume, and MACD confirmation.
+actively breaking out with strong momentum, volume, and VWAP confirmation.
 Highly selective — fires rarely on the strongest setups only.
 
 Entry conditions (ALL must be true):
 1. Price near HOD: within 3% of the 20-bar high
-2. MACD positive: MACD line > 0 AND histogram > 0
+2. Price above VWAP: trading above institutional fair value
 3. RSI sweet spot: between 55-80 (momentum without exhaustion)
-4. Volume surge: current bar > 3x 20-bar volume SMA
-5. Price momentum: 10-bar ROC > 3%
+4. Volume surge: current bar > 1.5x 20-bar volume SMA
+5. Price momentum: 10-bar ROC > 1.5%
 6. Bar closing strength: close in upper 60% of bar range
 
 Stop: entry - (ATR × 2.0)
-Exit: 2 consecutive MACD histogram negative bars, RSI < 40, or price below 10-bar low
+Exit: 2 consecutive bar closes below VWAP, RSI < 40, or price below 10-bar low
 """
 
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
 from src.bot.signals.base import Signal, SignalDirection, SignalGenerator
-from src.data.indicators import atr, macd, rsi, volume_sma
+from src.data.indicators import atr, rsi, volume_sma
+
+
+def calculate_vwap(bars: pd.DataFrame) -> pd.Series:
+    """Calculate cumulative intraday VWAP, reset at each market open."""
+    typical_price = (bars["high"] + bars["low"] + bars["close"]) / 3
+    tp_vol = typical_price * bars["volume"]
+
+    # Use broker-provided VWAP if available and non-zero
+    if "vwap" in bars.columns:
+        broker_vwap = bars["vwap"]
+        if (broker_vwap > 0).any():
+            return broker_vwap
+
+    # Fallback: calculate from OHLCV
+    bars_et = bars.index.tz_convert("America/New_York")
+    day_groups = bars_et.date
+    cum_tp_vol = tp_vol.groupby(day_groups).cumsum()
+    cum_vol = bars["volume"].groupby(day_groups).cumsum()
+    vwap = cum_tp_vol / cum_vol.replace(0, float("nan"))
+    return vwap
 
 
 class MomentumSurgeStrategy(SignalGenerator):
@@ -32,31 +53,30 @@ class MomentumSurgeStrategy(SignalGenerator):
     Momentum surge entry strategy on 5-min bars.
 
     Enters when a stock is actively surging with strong momentum indicators.
-    Does NOT wait for a pullback — catches the initial move.
+    Uses VWAP (Volume Weighted Average Price) as the momentum confirmation
+    instead of MACD — VWAP responds instantly with no warmup lag.
     """
 
     def __init__(
         self,
-        macd_fast: int = 8,
-        macd_slow: int = 21,
-        macd_signal: int = 5,
         rsi_period: int = 14,
         atr_period: int = 14,
         atr_stop_multiplier: float = 2.0,
         volume_period: int = 20,
-        volume_multiplier: float = 3.0,
+        volume_multiplier: float = 1.5,
         roc_period: int = 10,
-        roc_min: float = 0.03,
+        roc_min: float = 0.015,
         rsi_min: float = 55.0,
         rsi_max: float = 80.0,
         hod_proximity: float = 0.03,
         risk_reward_target: float = 10.0,
         min_signal_strength: float = 0.5,
+        # Accept but ignore legacy MACD params for backward compat
+        macd_fast: int = 8,
+        macd_slow: int = 21,
+        macd_signal: int = 5,
     ):
         super().__init__(name="momentum_surge")
-        self.macd_fast = macd_fast
-        self.macd_slow = macd_slow
-        self.macd_signal = macd_signal
         self.rsi_period = rsi_period
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
@@ -70,7 +90,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         self.risk_reward_target = risk_reward_target
         self.min_signal_strength = min_signal_strength
 
-        self.min_periods = max(macd_slow, volume_period, atr_period, roc_period) + 10
+        self.min_periods = max(volume_period, atr_period, roc_period) + 10
 
     def generate(
         self,
@@ -93,9 +113,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         current = current_price if current_price else float(close.iloc[-1])
 
         # ── Indicator calculations ──────────────────────────────────────
-        macd_line, signal_line, histogram = macd(
-            close, self.macd_fast, self.macd_slow, self.macd_signal
-        )
+        vwap_values = calculate_vwap(bars)
         rsi_values = rsi(close, self.rsi_period)
         atr_values = atr(high, low, close, self.atr_period)
         avg_volume = volume_sma(volume, self.volume_period)
@@ -104,8 +122,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         roc = close.pct_change(self.roc_period)
 
         # Current values
-        cur_macd = float(macd_line.iloc[-1])
-        cur_hist = float(histogram.iloc[-1])
+        cur_vwap = float(vwap_values.iloc[-1])
         cur_rsi = float(rsi_values.iloc[-1])
         cur_atr = float(atr_values.iloc[-1])
         cur_volume = float(volume.iloc[-1])
@@ -126,13 +143,18 @@ class MomentumSurgeStrategy(SignalGenerator):
             )
             return None
 
-        # 2. MACD positive with positive histogram
-        if cur_macd <= 0 or cur_hist <= 0:
+        # 2. Price above VWAP (trading above institutional fair value)
+        if np.isnan(cur_vwap) or cur_vwap <= 0:
+            logger.debug(f"[SURGE] {symbol}: VWAP unavailable")
+            return None
+        if current <= cur_vwap:
             logger.debug(
-                f"[SURGE] {symbol}: MACD not positive "
-                f"(macd={cur_macd:.4f}, hist={cur_hist:.4f})"
+                f"[SURGE] {symbol}: price ${current:.2f} below "
+                f"VWAP ${cur_vwap:.2f}"
             )
             return None
+
+        price_vs_vwap = (current - cur_vwap) / cur_vwap
 
         # 3. RSI in sweet spot
         if cur_rsi < self.rsi_min or cur_rsi > self.rsi_max:
@@ -175,7 +197,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         # ── All conditions met — calculate signal ───────────────────────
         logger.info(
             f"[SURGE] {symbol}: ENTRY signal @ ${current:.2f} | "
-            f"MACD={cur_macd:.4f} hist={cur_hist:.4f} | "
+            f"VWAP=${cur_vwap:.2f} (+{price_vs_vwap:.1%}) | "
             f"RSI={cur_rsi:.1f} | vol={volume_ratio:.1f}x | ROC={cur_roc:.1%}"
         )
 
@@ -186,7 +208,7 @@ class MomentumSurgeStrategy(SignalGenerator):
 
         # Signal strength
         strength = self._calculate_strength(
-            cur_rsi, volume_ratio, histogram, has_catalyst
+            cur_rsi, volume_ratio, price_vs_vwap, has_catalyst
         )
 
         if strength < self.min_signal_strength:
@@ -204,8 +226,8 @@ class MomentumSurgeStrategy(SignalGenerator):
             timestamp=datetime.now(),
             metadata={
                 "system": "momentum_surge",
-                "macd": round(cur_macd, 4),
-                "macd_histogram": round(cur_hist, 4),
+                "vwap": round(cur_vwap, 4),
+                "price_vs_vwap": round(price_vs_vwap * 100, 2),
                 "rsi": round(cur_rsi, 1),
                 "volume_ratio": round(volume_ratio, 1),
                 "roc_10": round(cur_roc * 100, 2),
@@ -218,7 +240,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         self,
         cur_rsi: float,
         volume_ratio: float,
-        histogram: pd.Series,
+        price_vs_vwap: float,
         has_catalyst: bool,
     ) -> float:
         """Calculate signal strength (0.0 - 1.0)."""
@@ -228,16 +250,13 @@ class MomentumSurgeStrategy(SignalGenerator):
         if 60 <= cur_rsi <= 75:
             strength += 0.10
 
-        # Strong volume (>5x average — 3x is already the minimum entry)
+        # Strong volume (>5x average — 1.5x is already the minimum entry)
         if volume_ratio > 5.0:
             strength += 0.10
 
-        # MACD histogram accelerating (current > previous)
-        if len(histogram) >= 2:
-            cur_h = float(histogram.iloc[-1])
-            prev_h = float(histogram.iloc[-2])
-            if cur_h > prev_h > 0:
-                strength += 0.10
+        # Strong VWAP deviation (price >2% above VWAP)
+        if price_vs_vwap > 0.02:
+            strength += 0.10
 
         # News catalyst
         if has_catalyst:
@@ -257,7 +276,7 @@ class MomentumSurgeStrategy(SignalGenerator):
         Check if a surge position should exit.
 
         Exit when:
-        - MACD histogram negative 2 consecutive bars (momentum fading)
+        - 2 consecutive bar closes below VWAP (momentum fading)
         - RSI drops below 40 (momentum lost)
         - Price below 10-bar low (trend broken)
         """
@@ -267,21 +286,25 @@ class MomentumSurgeStrategy(SignalGenerator):
         bars = self.normalize_bars(bars)
 
         close = bars["close"]
-        high = bars["high"]
         low = bars["low"]
 
         current = current_price if current_price else float(close.iloc[-1])
 
-        # MACD histogram — require 2 consecutive negative bars
-        # (single negative bar is normal oscillation during a surge)
-        _, _, histogram = macd(
-            close, self.macd_fast, self.macd_slow, self.macd_signal
-        )
-        if len(histogram) >= 2:
-            cur_hist = float(histogram.iloc[-1])
-            prev_hist = float(histogram.iloc[-2])
-            if cur_hist < 0 and prev_hist < 0:
-                return True, f"MACD histogram negative 2 bars ({prev_hist:.4f}, {cur_hist:.4f})"
+        # VWAP exit — require 2 consecutive bar closes below VWAP
+        vwap_values = calculate_vwap(bars)
+        if len(close) >= 2:
+            cur_close = float(close.iloc[-1])
+            prev_close = float(close.iloc[-2])
+            cur_vwap = float(vwap_values.iloc[-1])
+            prev_vwap = float(vwap_values.iloc[-2])
+            if (
+                not np.isnan(cur_vwap) and not np.isnan(prev_vwap)
+                and cur_close < cur_vwap and prev_close < prev_vwap
+            ):
+                return True, (
+                    f"2 bars below VWAP "
+                    f"(${prev_close:.2f}<${prev_vwap:.2f}, ${cur_close:.2f}<${cur_vwap:.2f})"
+                )
 
         # RSI collapse
         rsi_values = rsi(close, self.rsi_period)

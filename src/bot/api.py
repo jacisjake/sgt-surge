@@ -1089,28 +1089,6 @@ DASHBOARD_HTML = """
             color: var(--text-muted);
         }
         /* Watchlist items */
-        .watch-item {
-            display: flex;
-            align-items: center;
-            padding: 12px 20px;
-            gap: 12px;
-            cursor: pointer;
-            transition: background 0.15s;
-            border-bottom: 1px solid var(--border-light);
-        }
-        .watch-item:hover { background: var(--border-light); }
-        .watch-item-info {
-            flex: 1;
-        }
-        .watch-item-symbol {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        .watch-item-detail {
-            font-size: 10px;
-            color: var(--text-secondary);
-        }
         .news-badge {
             display: inline-block;
             padding: 2px 6px;
@@ -1282,7 +1260,7 @@ DASHBOARD_HTML = """
                     <div class="kpi-value" id="total-pnl">--</div>
                     <div class="kpi-sub" id="pnl-breakdown">--</div>
                 </div>
-                <div class="kpi-card">
+                <div class="kpi-card" onclick="showTradeLedger()" style="cursor:pointer" title="Click to view trade history">
                     <div class="kpi-label">Win / Loss</div>
                     <div class="kpi-value" id="win-loss">--</div>
                     <div class="kpi-sub" id="win-loss-detail">--</div>
@@ -1326,7 +1304,21 @@ DASHBOARD_HTML = """
                     </div>
                     <div class="section-divider"></div>
                     <div class="section-body" id="stock-watchlist">
-                        <div style="padding:20px;color:var(--text-muted);font-size:12px">Loading...</div>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Price</th>
+                                    <th>Chg%</th>
+                                    <th>RelVol</th>
+                                    <th>Float</th>
+                                    <th>News</th>
+                                </tr>
+                            </thead>
+                            <tbody id="scanner-table">
+                                <tr><td colspan="6" style="color:var(--text-muted)">Loading...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -1395,6 +1387,30 @@ DASHBOARD_HTML = """
             </div>
             <div id="chart-container"></div>
             <div id="macd-container"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="ledger-modal">
+        <div class="modal" style="max-width:700px">
+            <div class="modal-header">
+                <span class="modal-title">Trade Ledger</span>
+                <button class="modal-close" onclick="closeLedger()">&times;</button>
+            </div>
+            <div style="padding:16px;overflow-y:auto;max-height:calc(90vh - 60px)">
+                <table style="width:100%">
+                    <thead><tr>
+                        <th style="text-align:left">Date</th>
+                        <th style="text-align:left">Symbol</th>
+                        <th style="text-align:right">Qty</th>
+                        <th style="text-align:right">Entry</th>
+                        <th style="text-align:right">Exit</th>
+                        <th style="text-align:right">P&amp;L</th>
+                        <th style="text-align:right">%</th>
+                    </tr></thead>
+                    <tbody id="ledger-body"></tbody>
+                </table>
+                <div id="ledger-summary" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--text-secondary)"></div>
+            </div>
         </div>
     </div>
 
@@ -1574,15 +1590,20 @@ DASHBOARD_HTML = """
                 }
 
                 // Scanner / watchlist
-                const watchlistEl = document.getElementById('stock-watchlist');
+                const scannerTable = document.getElementById('scanner-table');
                 const scannerCount = document.getElementById('scanner-count');
                 const stocks = watchlists.stocks || [];
                 scannerCount.textContent = stocks.length;
                 if (stocks.length === 0) {
-                    watchlistEl.innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px">No scanner results</div>';
+                    scannerTable.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted)">No scanner results</td></tr>';
                 } else {
-                    watchlistEl.innerHTML = stocks.map(item => {
-                        const changeDisplay = item.change !== 0 ? `${item.change > 0 ? '+' : ''}${item.change.toFixed(1)}%` : '--';
+                    scannerTable.innerHTML = stocks.map(item => {
+                        const changePct = item.change || 0;
+                        const changeStr = changePct !== 0 ? `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%` : '--';
+                        const changeCls = changePct > 0 ? 'positive' : changePct < 0 ? 'negative' : '';
+                        const rVol = item.relative_volume;
+                        const rVolStr = rVol ? (rVol >= 10 ? `${rVol.toFixed(0)}x` : `${rVol.toFixed(1)}x`) : '--';
+                        const floatStr = item.float_millions ? `${item.float_millions.toFixed(1)}M` : '--';
                         const headline = (item.news_headline || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
                         const newsUrl = item.news_url || '';
                         const newsBadge = item.has_catalyst
@@ -1591,13 +1612,14 @@ DASHBOARD_HTML = """
                                 : `<span class="news-badge" title="${headline}">NEWS</span>`)
                             : '';
                         return `
-                        <div class="watch-item" onclick="showChart('${item.symbol}')">
-                            <div class="watch-item-info">
-                                <div class="watch-item-symbol">${item.symbol}</div>
-                                <div class="watch-item-detail">${item.price > 0 ? formatCurrency(item.price) : '--'} &middot; ${changeDisplay}</div>
-                            </div>
-                            ${newsBadge}
-                        </div>`;
+                        <tr onclick="showChart('${item.symbol}')">
+                            <td class="symbol-cell">${item.symbol}</td>
+                            <td>${item.price > 0 ? formatCurrency(item.price) : '--'}</td>
+                            <td class="${changeCls}" style="font-weight:600">${changeStr}</td>
+                            <td>${rVolStr}</td>
+                            <td>${floatStr}</td>
+                            <td>${newsBadge}</td>
+                        </tr>`;
                     }).join('');
                 }
 
@@ -1838,11 +1860,47 @@ DASHBOARD_HTML = """
             }
         }
 
+        async function showTradeLedger() {
+            try {
+                const data = await fetch('api/trades/ledger').then(r => r.json());
+                if (data.error) { alert(data.error); return; }
+                const tbody = document.getElementById('ledger-body');
+                tbody.innerHTML = (data.trades || []).map(t => {
+                    const cls = t.pnl >= 0 ? 'positive' : 'negative';
+                    const sign = t.pnl >= 0 ? '+' : '';
+                    const date = t.exit_time ? new Date(t.exit_time).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '--';
+                    return `<tr>
+                        <td>${date}</td>
+                        <td style="font-weight:600">${t.symbol}</td>
+                        <td style="text-align:right">${t.qty}</td>
+                        <td style="text-align:right">$${t.entry_price.toFixed(2)}</td>
+                        <td style="text-align:right">$${t.exit_price.toFixed(2)}</td>
+                        <td style="text-align:right" class="${cls}">${sign}$${t.pnl.toFixed(2)}</td>
+                        <td style="text-align:right" class="${cls}">${sign}${t.pnl_pct.toFixed(1)}%</td>
+                    </tr>`;
+                }).join('');
+                const s = data.stats || {};
+                document.getElementById('ledger-summary').innerHTML =
+                    `<span>${s.total_trades} trades</span> &middot; `
+                    + `<span class="${s.total_realized_pnl >= 0 ? 'positive' : 'negative'}">${s.total_realized_pnl >= 0 ? '+' : ''}$${(s.total_realized_pnl||0).toFixed(2)} total</span> &middot; `
+                    + `<span>${(s.win_rate||0).toFixed(0)}% win rate</span> &middot; `
+                    + `<span class="positive">avg win $${(s.avg_win||0).toFixed(2)}</span> &middot; `
+                    + `<span class="negative">avg loss $${(s.avg_loss||0).toFixed(2)}</span>`;
+                document.getElementById('ledger-modal').classList.add('active');
+            } catch(e) { console.error('Ledger fetch failed:', e); }
+        }
+        function closeLedger() {
+            document.getElementById('ledger-modal').classList.remove('active');
+        }
+
         document.getElementById('chart-modal').addEventListener('click', (e) => {
             if (e.target.id === 'chart-modal') closeChart();
         });
+        document.getElementById('ledger-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'ledger-modal') closeLedger();
+        });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeChart();
+            if (e.key === 'Escape') { closeChart(); closeLedger(); }
         });
     </script>
 </body>

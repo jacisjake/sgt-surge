@@ -536,7 +536,7 @@ class TastytradeWSClient:
             "v": int(volume_val),
             "t": timestamp,
             "n": 0,
-            "vw": float(close_val),  # DXLink doesn't provide VWAP; use close
+            "vw": float(getattr(candle, "vwap", 0) or close_val),
         }
 
     @staticmethod

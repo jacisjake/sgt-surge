@@ -136,21 +136,8 @@ class BotScheduler:
                 replace_existing=True,
             )
 
-        # ── 1. Momentum scan: 6 AM - 3:55 PM ET, every 5 minutes ──────
-        # Continuous scanning all day — no trading window restriction
-        if self._momentum_scan_callback:
-            self.scheduler.add_job(
-                self._run_momentum_scan,
-                CronTrigger(
-                    day_of_week="mon-fri",
-                    hour="6-15",
-                    minute="*/5",
-                    timezone="America/New_York",
-                ),
-                id="momentum_scan",
-                name="Momentum Scan (6AM-4PM)",
-                replace_existing=True,
-            )
+        # ── 1. Momentum scan: handled by asyncio loop in main.py ────────
+        # (APScheduler cron was unreliable — timer chain broke under DXLink load)
 
         # NOTE: Position monitor and broker sync removed — replaced by WebSocket streaming
         # Position exits now handled by real-time quote callbacks (StreamHandler.on_quote)

@@ -11,12 +11,16 @@ Architecture:
 """
 
 import asyncio
+import logging
 import signal
 import sys
 from datetime import datetime, time as dt_time
 from typing import Optional
 
 from loguru import logger
+
+# Silence the tastytrade SDK's verbose debug logging (logs every WebSocket frame)
+logging.getLogger("tastytrade").setLevel(logging.WARNING)
 
 from src.bot.config import BotConfig, get_bot_config
 from src.bot.executor import TradeExecutor
@@ -116,9 +120,6 @@ class TradingBot:
 
         # Strategies
         self.strategy = MomentumPullbackStrategy(
-            macd_fast=self.config.macd_fast_period,
-            macd_slow=self.config.macd_slow_period,
-            macd_signal=self.config.macd_signal_period,
             atr_period=self.config.atr_period,
             atr_stop_multiplier=self.config.stock_atr_stop_multiplier,
             pullback_min_candles=self.config.pullback_min_candles,
@@ -128,9 +129,6 @@ class TradingBot:
             min_signal_strength=self.config.min_signal_strength,
         )
         self.surge_strategy = MomentumSurgeStrategy(
-            macd_fast=self.config.macd_fast_period,
-            macd_slow=self.config.macd_slow_period,
-            macd_signal=self.config.macd_signal_period,
             atr_period=self.config.atr_period,
             atr_stop_multiplier=2.0,  # Wider stop for surge entries near HOD
             risk_reward_target=self.config.risk_reward_target,
@@ -275,7 +273,8 @@ class TradingBot:
                 await self.stream_handler._backfill_bars(symbol)
             logger.info(f"[DXLink] Subscribed to {len(all_symbols)} symbols: {all_symbols}")
 
-        # 5. Start scheduler (reduced: scanner refresh + EOD only)
+        # 5. Start scheduler (time-specific events only: PR scan, EOD, daily reset)
+        # NOTE: Momentum scan uses its own asyncio loop (more reliable than APScheduler cron)
         self.scheduler.start()
         self._running = True
 
@@ -284,21 +283,19 @@ class TradingBot:
         for job in self.scheduler.get_jobs():
             logger.info(f"  - {job['name']}: next run {job['next_run']}")
 
-        # 6. Immediate scan on startup (don't wait for next cron tick)
-        asyncio.create_task(self._run_momentum_scan())
-
-        # 7. Run DXLink loops as independent tasks
+        # 6. Run background loops as independent tasks
         # NOT asyncio.gather — the SDK's anyio cancel scopes leak CancelledError
         # which would cancel ALL tasks in a gather. Independent tasks are isolated.
         data_task = asyncio.create_task(self._resilient_data_loop())
         trade_task = asyncio.create_task(self._resilient_trade_loop())
         poll_task = asyncio.create_task(self._position_poll_loop())
+        scan_task = asyncio.create_task(self._scan_loop())
 
         # Wait for shutdown signal (only thing in this coroutine)
         await self._shutdown_event.wait()
 
         # Clean shutdown: cancel the background tasks
-        for task in [data_task, trade_task, poll_task]:
+        for task in [data_task, trade_task, poll_task, scan_task]:
             task.cancel()
             try:
                 await task
@@ -339,6 +336,44 @@ class TradingBot:
                     f"restarting in 10s..."
                 )
                 await asyncio.sleep(10)
+
+    async def _scan_loop(self) -> None:
+        """
+        Run momentum scanner every 5 minutes as a simple asyncio loop.
+
+        More reliable than APScheduler cron — the scheduler's timer chain can break
+        when the event loop is busy with DXLink streaming. This loop runs the scan
+        immediately on startup, then every 5 minutes during trading hours (6AM-4PM ET).
+        """
+        import pytz
+
+        ET = pytz.timezone("America/New_York")
+        SCAN_INTERVAL = 300  # 5 minutes
+
+        # Immediate scan on startup
+        try:
+            await self._run_momentum_scan()
+        except Exception as e:
+            logger.error(f"[SCAN] Startup scan error: {e}")
+
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.sleep(SCAN_INTERVAL)
+            except asyncio.CancelledError:
+                break
+
+            # Only scan during trading hours (6AM-4PM ET, weekdays)
+            now_et = datetime.now(ET)
+            if now_et.weekday() >= 5:
+                continue
+            hour = now_et.hour
+            if hour < 6 or hour >= 16:
+                continue
+
+            try:
+                await self._run_momentum_scan()
+            except Exception as e:
+                logger.error(f"[SCAN] Scan loop error: {e}")
 
     async def _position_poll_loop(self) -> None:
         """
@@ -509,14 +544,14 @@ class TradingBot:
             )
             return
 
-        # Don't enter new positions in the last 15 minutes before close (3:45 PM ET)
+        # Don't enter new positions after 2:00 PM ET — momentum fades in the afternoon
         try:
             import pytz
             et = pytz.timezone("America/New_York")
             now_et = datetime.now(et).time()
-            no_new_entries_after = dt_time(15, 45)
+            no_new_entries_after = dt_time(14, 0)
             if now_et >= no_new_entries_after:
-                logger.debug(f"No new entries after 3:45 PM ET (currently {now_et.strftime('%H:%M')})")
+                logger.debug(f"No new entries after 2:00 PM ET (currently {now_et.strftime('%H:%M')})")
                 return
         except Exception:
             pass
@@ -655,14 +690,7 @@ class TradingBot:
 
             current_price = self.client.get_latest_price(symbol)
 
-            # Try pullback first (higher quality setup)
-            signal = self.strategy.generate(
-                symbol, bars, current_price, has_catalyst=has_catalyst
-            )
-            if signal is not None:
-                return signal
-
-            # Fall back to surge entry (catches initial moves)
+            # Surge strategy only (pullback disabled — negative intraday expectancy)
             return self.surge_strategy.generate(
                 symbol, bars, current_price, has_catalyst=has_catalyst
             )
