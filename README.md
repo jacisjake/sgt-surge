@@ -1,92 +1,54 @@
 # Sgt Surge
 
-Algorithmic day/swing trading system for Alpaca API. Designed for small accounts with aggressive risk management.
+> **DISCLAIMER: This project is an experiment for educational and research purposes only. It is not financial advice. Trading stocks, options, and other securities involves substantial risk of loss and is not suitable for every investor. Past performance, whether actual or indicated by historical backtests, is not indicative of future results. You could lose some or all of your invested capital. Do not trade with money you cannot afford to lose. The authors and contributors of this project make no representations or warranties regarding the accuracy or completeness of the strategies, code, or information provided. By using this software, you acknowledge that you are solely responsible for your own trading decisions and any resulting financial outcomes. Always consult a qualified financial advisor before making investment decisions.**
 
-## Features
+Algorithmic momentum day-trading bot targeting low-float stocks on tastytrade. Built for small accounts with aggressive risk management.
 
-- **MACD Strategy**: Buy on MACD crossover + bullish pattern, exit on MACD cross below OR red candle when below signal
-- **Multi-asset support**: Stocks (active), Crypto (paused)
-- **Risk-first design**: Position sizing based on risk, not capital
-- **ATR-based stops**: Dynamic stop-loss based on volatility
-- **Portfolio limits**: Drawdown protection, daily loss limits, position limits
-- **Live dashboard**: Real-time status at http://localhost:8080
+## Strategy
 
-## Current Strategy
+**Momentum Surge** -- Ross Cameron-style breakout trading on 5-minute bars.
 
-**Stock Trading (MACD Momentum)**
-- Timeframe: 5-minute bars
-- MACD settings: 8-17-9 (fast)
-- Entry: MACD crosses above signal + (1 green candle OR positive increasing histogram) + volume > 1.2x avg + RSI 30-70
-- Exit: MACD crosses below signal OR (red candle when MACD already below signal)
-- Stop-loss: 2x ATR (enforced)
-- Take-profit: 2x ATR (1:1 R:R)
-- Trailing stop: 75% of stop distance from highest price
-- Signal check: Every 5 minutes during market hours
+- **Scanner**: TradingView screener for top gainers, enriched with relative volume and float data
+- **Entry**: Price near recent high, above VWAP, RSI 55-90, volume surge > 1.5x average, strong bar close
+- **Exit**: 2 consecutive closes below VWAP, RSI collapse (< 40), or price below 10-bar low
+- **Stop**: ATR x 2.0 below entry
+- **Target**: 3:1 risk/reward
+- **Schedule**: Scanning 6:00 AM - 4:00 PM ET, safety net close at 3:55 PM ET
+- **Position sizing**: Up to 90% of buying power, max 2% account risk per trade
+- **Max trades/day**: 10 (max 2 per symbol)
 
-## Project Structure
+## Prerequisites
 
-```
-sgt-surge/
-├── src/
-│   ├── bot/
-│   │   ├── main.py            # Main trading bot controller
-│   │   ├── signals/           # Strategy implementations
-│   │   │   ├── macd.py        # MACD crossover strategy
-│   │   │   ├── breakout.py    # Donchian breakout (deprecated)
-│   │   │   └── mean_reversion.py  # RSI+BB mean reversion
-│   │   ├── screener.py        # Stock/crypto screeners
-│   │   ├── scheduler.py       # Job scheduling
-│   │   └── api.py             # Dashboard API
-│   │
-│   ├── core/
-│   │   ├── alpaca_client.py   # Unified Alpaca API client
-│   │   ├── position_manager.py # Track positions and P&L
-│   │   └── order_executor.py  # Order placement with retries
-│   │
-│   ├── risk/
-│   │   ├── position_sizer.py  # Risk-based position sizing
-│   │   ├── stop_manager.py    # Stop-loss calculations
-│   │   └── portfolio_limits.py # Portfolio-level risk limits
-│   │
-│   └── data/
-│       └── indicators.py      # Technical indicators (MACD, RSI, BB, ATR, etc.)
-│
-├── config/
-│   └── settings.py            # Pydantic settings management
-│
-├── deploy/
-│   ├── deploy-remote.sh       # Remote deployment script
-│   └── podman-compose.yml     # Container orchestration
-│
-└── tests/
-    └── unit/                  # Unit tests
-```
+- **Python 3.11+**
+- **tastytrade account** -- [Sign up here](https://tastytrade.com/welcome/?referralCode=5VEAT9PR62) (referral link -- helps me out if you use it!)
+- **Financial Modeling Prep API key** (free tier) -- for float data
+- **Podman** or **Docker** (for containerized deployment)
 
 ## Quick Start
 
-### 1. Setup
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/jacisjake/sgt-surge.git
 cd sgt-surge
 
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Copy environment file
-cp .env.example .env
 ```
 
 ### 2. Configure
 
-Edit `.env` with your Alpaca credentials:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your credentials:
 
 ```env
-ALPACA_API_KEY=your_key_here
-ALPACA_SECRET_KEY=your_secret_here
+TASTYTRADE_USERNAME=your_username
+TASTYTRADE_PASSWORD=your_password
+FMP_API_KEY=your_fmp_key
 TRADING_MODE=paper  # or 'live'
 ```
 
@@ -98,34 +60,12 @@ python scripts/run_bot.py
 
 Dashboard available at http://localhost:8080
 
-### 4. Deploy to Remote Server
+### 4. Deploy to remote server
 
 ```bash
 cd deploy
 ./deploy-remote.sh user@host --build
 ```
-
-## Configuration
-
-Key settings in `src/bot/config.py`:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `macd_fast_period` | 8 | MACD fast EMA period |
-| `macd_slow_period` | 17 | MACD slow EMA period |
-| `macd_signal_period` | 9 | MACD signal line period |
-| `stock_timeframe` | 5Min | Bar timeframe for signals |
-| `stock_check_interval_minutes` | 5 | Signal check frequency |
-| `stock_atr_stop_multiplier` | 2.0 | ATR multiplier for stops |
-| `enable_crypto_trading` | false | Enable/disable crypto |
-
-## Risk Management
-
-- Max 2% account risk per trade
-- Position size calculated from stop distance
-- ATR-based stops and take-profits adapt to volatility
-- Trailing stop locks in profits as price rises
-- Portfolio limits: max drawdown, daily loss, position count
 
 ## License
 
