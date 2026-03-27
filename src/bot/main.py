@@ -14,7 +14,7 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from typing import Optional
 
 from loguru import logger
@@ -130,7 +130,6 @@ class TradingBot:
         )
         self.surge_strategy = MomentumSurgeStrategy(
             atr_period=self.config.atr_period,
-            atr_stop_multiplier=2.0,  # Wider stop for surge entries near HOD
             risk_reward_target=self.config.risk_reward_target,
             min_signal_strength=self.config.min_signal_strength,
         )
@@ -156,7 +155,6 @@ class TradingBot:
                 "momentum_pullback": self.strategy,
                 "momentum_surge": self.surge_strategy,
             },
-            trading_window_end=self.config.trading_window_end,
         )
 
         # WebSocket client (DXLink via tastytrade SDK)
@@ -168,7 +166,7 @@ class TradingBot:
 
         # Stream handler (event-driven signal engine)
         self.stream_handler = StreamHandler(
-            strategy=self.strategy,
+            strategy=self.surge_strategy,
             processor=self.processor,
             executor=self.executor,
             monitor=self.monitor,
@@ -202,6 +200,9 @@ class TradingBot:
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._daily_trades_today = 0
+        self._symbol_trade_counts: dict[str, int] = {}  # Per-symbol daily trade count
+        # Share the symbol trade counts dict with stream handler (same reference)
+        self.stream_handler._symbol_trade_counts = self._symbol_trade_counts
         self._scanner_results = []  # Latest scanner hits
 
     async def start(self) -> None:
@@ -217,15 +218,12 @@ class TradingBot:
             await self._shutdown_event.wait()
             return
 
-        # Always trade full day — monitor exits up to 3:55 PM safety net
-        from datetime import time as dt_time
-        self.monitor._window_end = dt_time(15, 55)
-        logger.info(f"  Window: 6:00 AM - 3:55 PM ET (all day)")
+        logger.info(f"  Schedule: 6:00 AM - 4:00 PM ET | Safety net: 3:55 PM ET")
         logger.info(f"  Max daily trades: {self.config.max_daily_trades}")
         logger.info(
             f"  Scanner: ${self.config.scanner_min_price}-${self.config.scanner_max_price}, "
             f"{self.config.scanner_min_change_pct}%+ change, "
-            f"{self.config.scanner_min_relative_volume}x+ relVol"
+            f"${self.config.scanner_min_dollar_volume/1000:.0f}K+ $vol"
         )
         logger.info(f"  Screener: TradingView")
 
@@ -535,6 +533,13 @@ class TradingBot:
             )
             return
 
+        # No new entries after 3:15 PM ET — too close to 3:55 PM safety net
+        import pytz
+        from datetime import time as _time
+        if datetime.now(pytz.timezone("America/New_York")).time() >= _time(15, 15):
+            logger.debug("No new entries after 3:15 PM ET")
+            return
+
         # Check if we already have an open position
         open_positions = self.position_manager.get_open_positions()
         if len(open_positions) >= self.config.max_positions:
@@ -543,18 +548,6 @@ class TradingBot:
                 f"({len(open_positions)}/{self.config.max_positions})"
             )
             return
-
-        # Don't enter new positions after 2:00 PM ET — momentum fades in the afternoon
-        try:
-            import pytz
-            et = pytz.timezone("America/New_York")
-            now_et = datetime.now(et).time()
-            no_new_entries_after = dt_time(14, 0)
-            if now_et >= no_new_entries_after:
-                logger.debug(f"No new entries after 2:00 PM ET (currently {now_et.strftime('%H:%M')})")
-                return
-        except Exception:
-            pass
 
         # Get account info
         try:
@@ -576,7 +569,7 @@ class TradingBot:
                 max_price=self.config.scanner_max_price,
                 preferred_min_price=self.config.scanner_preferred_min_price,
                 min_change_pct=self.config.scanner_min_change_pct,
-                min_relative_volume=self.config.scanner_min_relative_volume,
+                min_dollar_volume=self.config.scanner_min_dollar_volume,
                 min_float_millions=self.config.scanner_min_float_millions,
                 enable_float_filter=self.config.scanner_enable_float_filter,
                 top_n=self.config.scanner_top_n,
@@ -656,8 +649,9 @@ class TradingBot:
 
             if executed:
                 self._daily_trades_today += 1
+                self._symbol_trade_counts[symbol] = self._symbol_trade_counts.get(symbol, 0) + 1
                 self.portfolio_limits.record_entry()
-                logger.info(f"[TRADE] Trade #{self._daily_trades_today} executed for {symbol}")
+                logger.info(f"[TRADE] Trade #{self._daily_trades_today} executed for {symbol} (symbol trade #{self._symbol_trade_counts[symbol]})")
 
     async def _generate_signal(
         self, symbol: str, has_catalyst: bool = False
@@ -692,7 +686,8 @@ class TradingBot:
 
             # Surge strategy only (pullback disabled — negative intraday expectancy)
             return self.surge_strategy.generate(
-                symbol, bars, current_price, has_catalyst=has_catalyst
+                symbol, bars, current_price, has_catalyst=has_catalyst,
+                symbol_trade_count=self._symbol_trade_counts.get(symbol, 0),
             )
 
         except Exception as e:
@@ -745,7 +740,7 @@ class TradingBot:
         if exec_result.success:
             logger.info(
                 f"  FILLED: {exec_result.order_result.filled_qty:.2f} "
-                f"@ ${exec_result.order_result.avg_fill_price:.2f}"
+                f"@ ${exec_result.order_result.filled_price:.2f}"
             )
             self.bot_state.remove_active_signal(signal.symbol, executed=True)
             return True
@@ -786,7 +781,7 @@ class TradingBot:
         """
         End-of-day cleanup: close all positions, cancel all orders.
 
-        Called at 10:05 AM ET (after trading window) and 3:55 PM ET (safety net).
+        Called at 3:55 PM ET (safety net).
         """
         logger.info("[EOD] Running end-of-day cleanup...")
 
@@ -823,6 +818,7 @@ class TradingBot:
         logger.info("[RESET] Daily reset...")
 
         self._daily_trades_today = 0
+        self._symbol_trade_counts.clear()  # .clear() to preserve shared reference
         self._scanner_results = []
 
         # Reset stream handler daily counters
@@ -956,7 +952,6 @@ class TradingBot:
             "running": self._running,
             "scheduler_running": self.scheduler.is_running,
             "is_trading_day": self.scheduler.is_trading_day(),
-            "in_trading_window": self.scheduler.is_in_trading_window(),
             "in_premarket": self.scheduler.is_in_premarket(),
             "market_open": self.scheduler.is_market_open(),
             "account": {

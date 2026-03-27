@@ -157,13 +157,16 @@ class SignalProcessor:
 
         # Step 3: Calculate position size
         # Use momentum sizing for day trading (majority of buying power)
+        # Scale by signal strength: weak signals (0.5) get 50% size, strong (1.0) get full
         max_bp_pct = getattr(self.config, 'max_position_pct_of_buying_power', 0.90)
+        strength_scalar = max(signal.strength, 0.5)  # Floor at 50% size
+        scaled_bp_pct = max_bp_pct * strength_scalar
         size_result = self.position_sizer.calculate_momentum_size(
             account_equity=account_equity,
             entry_price=signal.entry_price,
             stop_price=signal.stop_price,
             buying_power=buying_power,
-            max_equity_pct=max_bp_pct,
+            max_equity_pct=scaled_bp_pct,
         )
 
         if size_result.shares < 0.001:  # Effectively zero

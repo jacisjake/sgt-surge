@@ -1,7 +1,7 @@
 """
 Unified tastytrade API client.
 
-Replaces AlpacaClient. Uses tastytrade REST API for account/orders/positions
+Uses tastytrade REST API for account/orders/positions
 and DXLink (via tastytrade SDK) for market data streaming and bar backfill.
 
 Mode (paper/live) controlled by configuration:
@@ -60,8 +60,7 @@ class TastytradeClient:
     """
     Unified tastytrade client for all trading operations.
 
-    API-compatible drop-in replacement for AlpacaClient:
-    same method signatures, same return formats.
+    Unified tastytrade client for trading operations.
     """
 
     PROD_URL = "https://api.tastyworks.com"
@@ -550,31 +549,50 @@ class TastytradeClient:
         """
         Get the latest price for a symbol.
 
-        Uses the equity snapshot endpoint for a fast, single REST call.
+        Uses the /market-data/by-type endpoint for a fast, single REST call.
         Falls back to recent bars if that fails.
         """
-        # Try equity snapshot (single REST call, no DXLink)
+        # Try market-data snapshot (single REST call, no DXLink)
         try:
             data = self._get(
-                f"/market-data/stocks/quotes/{symbol}"
+                "/market-data/by-type", params={"equity": symbol}
             )["data"]
-            # Try last trade price first, then midpoint of bid/ask
-            last = data.get("last", 0) or data.get("lastTrade", 0)
-            if last and float(last) > 0:
-                return float(last)
-            bid = float(data.get("bid", 0) or 0)
-            ask = float(data.get("ask", 0) or 0)
+            # Response is a dict keyed by symbol type -> list of items
+            items = data.get("items", []) if isinstance(data, dict) else data
+            if isinstance(items, list) and items:
+                item = items[0]
+            elif isinstance(data, dict):
+                # Might be directly the quote object
+                item = data
+            else:
+                item = {}
+
+            # Try mark/mid price first, then last, then bid/ask midpoint
+            mark = float(item.get("mark", 0) or 0)
+            if mark > 0:
+                return mark
+            mid = float(item.get("mid", 0) or 0)
+            if mid > 0:
+                return mid
+            last = float(item.get("last", 0) or item.get("lastTrade", 0) or 0)
+            if last > 0:
+                return last
+            bid = float(item.get("bid", 0) or 0)
+            ask = float(item.get("ask", 0) or 0)
             if bid > 0 and ask > 0:
                 return round((bid + ask) / 2, 4)
             if ask > 0:
                 return float(ask)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[PRICE] market-data/by-type failed for {symbol}: {e}")
 
         # Fallback: get from most recent bar (slower — DXLink backfill)
-        bars = self.get_bars(symbol, timeframe="5Min", limit=1)
-        if not bars.empty:
-            return float(bars["close"].iloc[-1])
+        try:
+            bars = self.get_bars(symbol, timeframe="5Min", limit=1)
+            if not bars.empty:
+                return float(bars["close"].iloc[-1])
+        except Exception as e:
+            logger.debug(f"[PRICE] get_bars fallback failed for {symbol}: {e}")
 
         raise ValueError(f"No price data for {symbol}")
 
@@ -1018,7 +1036,7 @@ class TastytradeClient:
             ),
             "largest_win": max((t["pnl"] for t in wins), default=0.0),
             "largest_loss": min((t["pnl"] for t in losses), default=0.0),
-            "trades": completed_trades[-20:],
+            "trades": sorted(completed_trades, key=lambda x: x["exit_time"], reverse=True),
         }
 
     @staticmethod

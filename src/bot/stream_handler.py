@@ -100,6 +100,7 @@ class StreamHandler:
 
         # Day trading state (shared with TradingBot)
         self._daily_trades_today = 0
+        self._symbol_trade_counts: dict[str, int] = {}  # Per-symbol daily trade count
         self._max_daily_trades = config.max_daily_trades
 
         # Prevent concurrent signal processing
@@ -208,7 +209,10 @@ class StreamHandler:
 
             # Generate signal
             try:
-                gen_signal = self.strategy.generate(symbol, bars_df, current_price)
+                gen_signal = self.strategy.generate(
+                    symbol, bars_df, current_price,
+                    symbol_trade_count=self._symbol_trade_counts.get(symbol, 0),
+                )
             except Exception as e:
                 logger.debug(f"[STREAM] {symbol}: signal generation error: {e}")
                 return
@@ -330,10 +334,11 @@ class StreamHandler:
         if exec_result.success:
             logger.info(
                 f"  FILLED: {exec_result.order_result.filled_qty:.2f} "
-                f"@ ${exec_result.order_result.avg_fill_price:.2f}"
+                f"@ ${exec_result.order_result.filled_price:.2f}"
             )
             self.bot_state.remove_active_signal(signal.symbol, executed=True)
             self._daily_trades_today += 1
+            self._symbol_trade_counts[signal.symbol] = self._symbol_trade_counts.get(signal.symbol, 0) + 1
             self.portfolio_limits.record_entry()
 
             # Subscribe to quotes for position monitoring
@@ -348,13 +353,9 @@ class StreamHandler:
 
     async def on_quote(self, quote: dict) -> None:
         """
-        Handle incoming quote from WebSocket.
+        Handle incoming quote from DXLink WebSocket.
 
         Checks position exits (stops, targets, trailing) in real-time.
-
-        Quote format:
-        {"T": "q", "S": "AAPL", "bp": 150.10, "bs": 5, "ap": 150.20, "as": 3,
-         "t": "2026-02-10T14:35:00.123Z", "c": ["R"], "z": "C"}
         """
         symbol = quote.get("S")
         if not symbol:
@@ -534,6 +535,7 @@ class StreamHandler:
     def reset_daily(self) -> None:
         """Reset daily counters. Called by daily_reset."""
         self._daily_trades_today = 0
+        self._symbol_trade_counts = {}
         self._catalysts.clear()
         logger.info("[STREAM] Daily reset: counters cleared")
 

@@ -109,7 +109,6 @@ async def get_status() -> dict:
             "mode": _bot.config.trading_mode.value,
             "is_trading_day": _bot.scheduler.is_trading_day(),
             "market_open": _bot.scheduler.is_market_open(),
-            "in_trading_window": _bot.scheduler.is_in_trading_window(),
             "in_premarket": _bot.scheduler.is_in_premarket(),
             "equity": equity,
             "buying_power": buying_power,
@@ -132,8 +131,6 @@ async def get_status() -> dict:
             "trades_today": _bot._daily_trades_today,
             "max_daily_trades": _bot.config.max_daily_trades,
             "scanner_hits": len(_bot._scanner_results),
-            "full_day_trading": _bot.config.full_day_trading,
-            "trading_window": "9:30-15:55 ET" if _bot.config.full_day_trading else f"{_bot.config.trading_window_start}-{_bot.config.trading_window_end} ET",
             "last_sync": last_sync,
             "timestamp": datetime.now().isoformat(),
             # WebSocket streaming status
@@ -143,6 +140,18 @@ async def get_status() -> dict:
             # Press release scanner
             "pr_catalyst_count": _bot.press_release_scanner.get_status()["positive_hits"] if hasattr(_bot, "press_release_scanner") else 0,
             "pr_catalyst_symbols": _bot.press_release_scanner.get_catalyst_symbols(positive_only=True)[:10] if hasattr(_bot, "press_release_scanner") else [],
+            # Active strategy
+            "strategy": {
+                "name": "momentum_surge",
+                "rsi_min": _bot.surge_strategy.rsi_min if hasattr(_bot, "surge_strategy") else 55,
+                "rsi_max": _bot.surge_strategy.rsi_max if hasattr(_bot, "surge_strategy") else 85,
+                "volume_multiplier": _bot.surge_strategy.volume_multiplier if hasattr(_bot, "surge_strategy") else 1.5,
+                "roc_min_pct": _bot.surge_strategy.roc_min * 100 if hasattr(_bot, "surge_strategy") else 1.5,
+                "atr_stop_multiplier": _bot.surge_strategy.atr_stop_multiplier if hasattr(_bot, "surge_strategy") else 1.0,
+                "scanner_min_dollar_volume": _bot.config.scanner_min_dollar_volume,
+                "scanner_min_price": _bot.config.scanner_min_price,
+                "scanner_min_change_pct": _bot.config.scanner_min_change_pct,
+            },
             # Regime gate
             "regime_gate_enabled": _bot.config.enable_regime_gate,
             "regime_category": _bot.regime_detector.category if hasattr(_bot, "regime_detector") else None,
@@ -357,7 +366,7 @@ async def get_press_releases() -> dict:
 
     try:
         status = _bot.press_release_scanner.get_status()
-        hits = [h.to_dict() for h in _bot.press_release_scanner.hits[:50]]
+        hits = [h.to_dict() for h in _bot.press_release_scanner.hits if h.sentiment == "positive"][:50]
         return {
             "status": status,
             "hits": hits,
@@ -499,6 +508,31 @@ async def tradingview_webhook(payload: WebhookPayload) -> dict:
     }
 
 
+@app.post("/api/positions/{symbol}/close")
+async def close_position(symbol: str) -> dict:
+    """Manually close a position."""
+    if not _bot:
+        return {"error": "Bot not initialized"}
+
+    from loguru import logger
+    symbol = symbol.upper().strip()
+    logger.info(f"[API] Manual close requested for {symbol}")
+
+    position = _bot.position_manager.get_position(symbol)
+    if not position:
+        return {"error": f"No open position for {symbol}"}
+
+    exec_result = await _bot.executor.execute_exit(
+        symbol=symbol,
+        reason="manual_close_api",
+    )
+    if exec_result.success:
+        pnl = exec_result.position.realized_pnl if exec_result.position else 0
+        return {"status": "ok", "symbol": symbol, "pnl": round(pnl, 2)}
+    else:
+        return {"error": exec_result.error}
+
+
 @app.post("/api/scan/trigger")
 async def trigger_scan() -> dict:
     """Manually trigger a momentum scan."""
@@ -572,30 +606,6 @@ async def refresh_regime() -> dict:
     return {
         "status": "ok" if success else "error",
         "regime": status,
-    }
-
-
-@app.post("/api/settings/full-day-trading")
-async def toggle_full_day_trading(enabled: bool = True) -> dict:
-    """Toggle between early window (7-10 AM) and full day (9:30 AM - 3:55 PM) trading."""
-    if not _bot:
-        return {"error": "Bot not initialized"}
-
-    _bot.scheduler.set_full_day_trading(enabled)
-
-    # Update monitor's time-based exit window to match
-    from datetime import time as dt_time
-    if enabled:
-        _bot.monitor._window_end = dt_time(15, 55)
-    else:
-        parts = _bot.config.trading_window_end.split(":")
-        _bot.monitor._window_end = dt_time(int(parts[0]), int(parts[1]))
-
-    window = "9:30 AM - 3:55 PM ET" if enabled else f"{_bot.config.trading_window_start}-{_bot.config.trading_window_end} ET"
-    return {
-        "status": "ok",
-        "full_day_trading": enabled,
-        "trading_window": window,
     }
 
 
@@ -859,6 +869,7 @@ DASHBOARD_HTML = """
             line-height: 1.5;
             display: flex;
             height: 100vh;
+            height: 100dvh;
             overflow: hidden;
         }
         /* Sidebar */
@@ -1011,7 +1022,6 @@ DASHBOARD_HTML = """
         .content-row {
             display: flex;
             gap: 16px;
-            min-height: 300px;
         }
         @media (max-width: 900px) { .content-row { flex-direction: column; } }
         /* Section panels */
@@ -1021,12 +1031,14 @@ DASHBOARD_HTML = """
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            min-width: 0;
         }
         .section-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 16px 20px;
+            padding: 14px 20px;
+            flex-shrink: 0;
         }
         .section-title {
             font-family: var(--font-heading);
@@ -1042,20 +1054,52 @@ DASHBOARD_HTML = """
         .section-divider {
             height: 1px;
             background: var(--border);
+            flex-shrink: 0;
         }
         .section-body {
             flex: 1;
             overflow-y: auto;
+            min-height: 0;
         }
         .positions-section {
             flex: 1;
-            min-height: 200px;
         }
         .scanner-section {
             flex: 1;
-            min-height: 200px;
         }
         @media (max-width: 900px) { .scanner-section { width: 100%; } }
+        /* Scrollable table wrapper */
+        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .table-scroll table { min-width: 420px; }
+        .table-scroll.scanner-body table { min-width: 520px; }
+        /* Strategy grid */
+        #strategy-card {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 4px 0;
+            font-size: 12px;
+            padding: 12px 20px 16px;
+        }
+        #strategy-card > div {
+            padding: 4px 0;
+        }
+        /* Tablet & mobile */
+        @media (max-width: 900px) {
+            .sidebar { display: none; }
+            .content { padding: 16px; gap: 16px; }
+            #strategy-card { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .content { padding: 12px; gap: 12px; }
+            .section-header { padding: 12px 16px; }
+            th { padding: 8px 12px; }
+            td { padding: 8px 12px; font-size: 12px; }
+            .header { flex-wrap: wrap; gap: 8px; }
+            .kpi-value { font-size: 22px; }
+            .kpi-card { padding: 12px; gap: 6px; }
+            #strategy-card { grid-template-columns: repeat(2, 1fr); padding: 10px 16px 14px; }
+            .status-bar { display: none; }
+        }
         /* Tables */
         table { width: 100%; border-collapse: collapse; }
         th {
@@ -1072,8 +1116,9 @@ DASHBOARD_HTML = """
             font-size: 13px;
             border-bottom: 1px solid var(--border-light);
         }
-        tbody tr { cursor: pointer; transition: background 0.15s; }
-        tbody tr:hover { background: var(--border-light); }
+        tbody tr { transition: background 0.15s; }
+        tbody tr[style*="cursor:pointer"]:hover, .positions-section tbody tr:hover, .scanner-section tbody tr:hover { background: var(--border-light); cursor: pointer; }
+        .positions-section tbody tr, .scanner-section tbody tr { cursor: pointer; }
         .symbol-cell { font-weight: 600; }
         .side-badge {
             display: inline-block;
@@ -1101,10 +1146,12 @@ DASHBOARD_HTML = """
         .news-badge:hover { opacity: 0.8; }
         /* Extra sections below main content */
         .extra-sections {
-            display: flex;
-            flex-direction: column;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 16px;
         }
+        .extra-sections .section-full { grid-column: 1 / -1; }
+        @media (max-width: 900px) { .extra-sections { grid-template-columns: 1fr; } }
         .extra-sections .section-title-row {
             font-family: var(--font-heading);
             font-size: 13px;
@@ -1279,7 +1326,7 @@ DASHBOARD_HTML = """
                         <span class="section-count" id="pos-count" style="background:var(--accent-light);color:var(--accent)">0</span>
                     </div>
                     <div class="section-divider"></div>
-                    <div class="section-body">
+                    <div class="section-body table-scroll">
                         <table>
                             <thead>
                                 <tr>
@@ -1303,7 +1350,7 @@ DASHBOARD_HTML = """
                         <span class="section-count" id="scanner-count" style="background:#EEF2FF;color:#4F46E5">0</span>
                     </div>
                     <div class="section-divider"></div>
-                    <div class="section-body" id="stock-watchlist">
+                    <div class="section-body table-scroll scanner-body" id="stock-watchlist">
                         <table>
                             <thead>
                                 <tr>
@@ -1326,18 +1373,13 @@ DASHBOARD_HTML = """
             <div class="extra-sections">
                 <div class="section">
                     <div class="section-header">
-                        <span class="section-title">Press Releases <span id="pr-count" style="font-size:11px;color:var(--text-muted);font-weight:normal"></span></span>
+                        <span class="section-title">Active Strategy</span>
                     </div>
                     <div class="section-divider"></div>
                     <div class="section-body">
-                        <table>
-                            <thead>
-                                <tr><th>Symbol</th><th>Headline</th><th>Source</th><th>Sentiment</th></tr>
-                            </thead>
-                            <tbody id="pr-table">
-                                <tr><td colspan="4" style="color:var(--text-muted)">No press releases yet</td></tr>
-                            </tbody>
-                        </table>
+                        <div id="strategy-card">
+                            <span style="color:var(--text-muted)">Loading...</span>
+                        </div>
                     </div>
                 </div>
                 <div class="section">
@@ -1345,11 +1387,27 @@ DASHBOARD_HTML = """
                         <span class="section-title">Scheduled Jobs</span>
                     </div>
                     <div class="section-divider"></div>
-                    <div class="section-body">
+                    <div class="section-body table-scroll">
                         <table>
                             <thead><tr><th>Job</th><th>Next Run</th></tr></thead>
                             <tbody id="jobs-table">
                                 <tr><td colspan="2" style="color:var(--text-muted)">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="section section-full">
+                    <div class="section-header">
+                        <span class="section-title">Positive Catalysts <span id="pr-count" style="font-size:11px;color:var(--text-muted);font-weight:normal"></span></span>
+                    </div>
+                    <div class="section-divider"></div>
+                    <div class="section-body table-scroll">
+                        <table>
+                            <thead>
+                                <tr><th>Symbol</th><th>Headline</th><th>Source</th><th>Keywords</th></tr>
+                            </thead>
+                            <tbody id="pr-table">
+                                <tr><td colspan="4" style="color:var(--text-muted)">No positive catalysts yet</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1397,6 +1455,7 @@ DASHBOARD_HTML = """
                 <button class="modal-close" onclick="closeLedger()">&times;</button>
             </div>
             <div style="padding:16px;overflow-y:auto;max-height:calc(90vh - 60px)">
+                <div id="ledger-sparkline" style="width:100%;height:120px;margin-bottom:12px"></div>
                 <table style="width:100%">
                     <thead><tr>
                         <th style="text-align:left">Date</th>
@@ -1642,21 +1701,38 @@ DASHBOARD_HTML = """
                     }).join('');
                 }
 
-                // Press releases
+                // Strategy card
+                const strat = status.strategy;
+                if (strat) {
+                    document.getElementById('strategy-card').innerHTML = [
+                        ['Strategy', strat.name.replace('_', ' ')],
+                        ['RSI Range', `${strat.rsi_min}–${strat.rsi_max}`],
+                        ['Vol Multiplier', `${strat.volume_multiplier}x`],
+                        ['ROC Min', `${strat.roc_min_pct}%`],
+                        ['ATR Stop', `${strat.atr_stop_multiplier}x`],
+                        ['Scanner $Vol', `≥$${(strat.scanner_min_dollar_volume/1000).toFixed(0)}K`],
+                        ['Scanner Price', `≥$${strat.scanner_min_price}`],
+                        ['Scanner Change', `≥${strat.scanner_min_change_pct}%`],
+                    ].map(([k, v]) => `<div><span style="color:var(--text-muted)">${k}</span><br><strong>${v}</strong></div>`).join('');
+                }
+
+                // Press releases (positive only)
                 const prTable = document.getElementById('pr-table');
                 const prCount = document.getElementById('pr-count');
                 const prHits = (prData && prData.hits) || [];
                 if (prHits.length === 0) {
-                    prTable.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted)">No press releases detected yet</td></tr>';
+                    prTable.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted)">No positive catalysts detected yet</td></tr>';
                     prCount.textContent = '';
                 } else {
-                    const posCount = prHits.filter(h => h.sentiment === 'positive').length;
-                    prCount.textContent = `(${prHits.length} total, ${posCount} positive)`;
+                    prCount.textContent = `(${prHits.length})`;
                     prTable.innerHTML = prHits.slice(0, 20).map(h => {
-                        const sentCls = h.sentiment === 'positive' ? 'positive' : h.sentiment === 'negative' ? 'negative' : 'neutral';
-                        const sentIcon = h.sentiment === 'positive' ? '&#x2191;' : h.sentiment === 'negative' ? '&#x2193;' : '&#x25CF;';
                         const headline = h.headline.length > 80 ? h.headline.substring(0, 80) + '...' : h.headline;
-                        return `<tr><td><strong>${h.symbol}</strong></td><td style="font-size:12px">${headline}</td><td style="font-size:11px;color:var(--text-muted)">${h.source}</td><td class="${sentCls}">${sentIcon} ${h.sentiment}</td></tr>`;
+                        const keywords = (h.matched_keywords || []).slice(0, 3).join(', ') || '-';
+                        const hasUrl = h.url && !h.url.startsWith('fmp://');
+                        const headlineHtml = hasUrl
+                            ? `<a href="${h.url}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px">${headline}</a>`
+                            : headline;
+                        return `<tr${hasUrl ? ` onclick="window.open('${h.url}','_blank')" style="cursor:pointer"` : ' style="cursor:default"'}><td><strong>${h.symbol}</strong></td><td style="font-size:12px">${headlineHtml}</td><td style="font-size:11px;color:var(--text-muted)">${h.source}</td><td style="font-size:11px;color:var(--success)">${keywords}</td></tr>`;
                     }).join('');
                 }
 
@@ -1887,10 +1963,64 @@ DASHBOARD_HTML = """
                     + `<span class="positive">avg win $${(s.avg_win||0).toFixed(2)}</span> &middot; `
                     + `<span class="negative">avg loss $${(s.avg_loss||0).toFixed(2)}</span>`;
                 document.getElementById('ledger-modal').classList.add('active');
+                // Render cumulative P&L sparkline
+                renderLedgerSparkline(data.trades || [], data.experiment || {});
             } catch(e) { console.error('Ledger fetch failed:', e); }
+        }
+        let ledgerChart = null;
+        function renderLedgerSparkline(trades, experiment) {
+            const container = document.getElementById('ledger-sparkline');
+            container.innerHTML = '';
+            if (!trades.length) return;
+            const startCap = experiment.starting_capital || 250;
+            const goal = experiment.goal || 25000;
+            // Build equity curve (oldest first)
+            const sorted = [...trades].reverse();
+            let equity = startCap;
+            const series = sorted.map(t => {
+                equity += t.pnl;
+                const d = t.exit_time ? new Date(t.exit_time) : new Date();
+                return { time: d.toISOString().split('T')[0], value: parseFloat(equity.toFixed(2)) };
+            });
+            // Deduplicate same-day entries (keep last)
+            const byDay = {};
+            series.forEach(p => { byDay[p.time] = p.value; });
+            const dedupSeries = Object.entries(byDay).map(([time, value]) => ({time, value}));
+            const styles = getComputedStyle(document.documentElement);
+            const bg = styles.getPropertyValue('--card-bg').trim() || '#1a1a2e';
+            const border = styles.getPropertyValue('--border').trim() || '#2a2a4a';
+            const textSec = styles.getPropertyValue('--text-secondary').trim() || '#8888aa';
+            const lastEquity = dedupSeries[dedupSeries.length - 1]?.value || startCap;
+            const lineColor = lastEquity >= startCap ? '#22c55e' : '#ef4444';
+            ledgerChart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: 120,
+                layout: { background: { color: bg }, textColor: textSec, fontSize: 10 },
+                grid: { vertLines: { visible: false }, horzLines: { color: border, style: 3 } },
+                rightPriceScale: { borderVisible: false, autoScale: false },
+                timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true },
+                crosshair: { mode: 0 },
+                handleScale: false,
+                handleScroll: false,
+            });
+            const areaSeries = ledgerChart.addAreaSeries({
+                lineColor: lineColor,
+                topColor: lastEquity >= startCap ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)',
+                bottomColor: lastEquity >= startCap ? 'rgba(34,197,94,0.02)' : 'rgba(239,68,68,0.02)',
+                lineWidth: 2,
+                priceFormat: { type: 'custom', formatter: v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0}) },
+            });
+            areaSeries.setData(dedupSeries);
+            // Goal line
+            areaSeries.createPriceLine({ price: goal, color: 'rgba(34,197,94,0.2)', lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '$25K' });
+            // Starting capital line
+            areaSeries.createPriceLine({ price: startCap, color: 'rgba(136,136,170,0.25)', lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '$' + startCap });
+            areaSeries.applyOptions({ autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: goal } }) });
+            ledgerChart.timeScale().fitContent();
         }
         function closeLedger() {
             document.getElementById('ledger-modal').classList.remove('active');
+            if (ledgerChart) { ledgerChart.remove(); ledgerChart = null; }
         }
 
         document.getElementById('chart-modal').addEventListener('click', (e) => {

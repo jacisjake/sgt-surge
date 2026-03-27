@@ -2,9 +2,8 @@
 Momentum day trading scheduler.
 
 Manages scheduled jobs for the trading day:
-- Pre-market scanning (6:00-7:00 AM ET)
-- Active momentum scanning + signal generation (7:00-10:00 AM ET)
-- End-of-day cleanup (close positions, cancel orders)
+- Pre-market scanning (6:00 AM ET)
+- Active momentum scanning + signal generation (6:00 AM - 4:00 PM ET)
 - Safety net close-all (3:55 PM ET)
 - Daily reset (6:00 AM ET)
 
@@ -32,13 +31,9 @@ class BotScheduler:
     Day trading scheduler.
 
     Schedule (all times Eastern):
-    - 06:00 AM: Daily reset + start pre-market scanning (every 5 min)
-    - 07:00 AM: Active scanning + signals (every 1 min)
-    - 10:00 AM: Stop scanning for new entries
-    - 10:05 AM: End-of-day cleanup (close positions)
+    - 06:00 AM: Daily reset + start scanning
+    - 06:00 AM - 4:00 PM: Active scanning + signals (every 5 min)
     - 3:55 PM: Safety net close-all
-    - Position monitor: every 30s whenever running
-    - Broker sync: every 1 min whenever running
     """
 
     def __init__(self, config: BotConfig):
@@ -62,10 +57,7 @@ class BotScheduler:
         # Track state
         self._is_running = False
 
-        # Always trade all day: scan 6 AM - 4 PM, safety net at 3:55 PM
         self._premarket_start = self._parse_time(config.premarket_scan_start)
-        self._window_start = time(6, 0)
-        self._window_end = time(15, 55)
 
     @staticmethod
     def _parse_time(time_str: str) -> time:
@@ -101,9 +93,6 @@ class BotScheduler:
 
         pre_h = self._premarket_start.hour
         pre_m = self._premarket_start.minute
-        win_start_h = self._window_start.hour
-        win_end_h = self._window_end.hour
-        win_end_m = self._window_end.minute
 
         # ── 0. Press release scan: 4 AM + 9:15 AM ET ─────────────────────
         # Two scans: overnight PRs at 4 AM, last-minute earnings at 9:15 AM
@@ -195,39 +184,16 @@ class BotScheduler:
 
         return True
 
-    # ── Trading Window Helpers ───────────────────────────────────────────
-
-    def is_in_trading_window(self) -> bool:
-        """
-        Check if we're inside the active trading window.
-
-        Returns True between trading_window_start and trading_window_end ET,
-        but only on valid trading days. This is the window where new entries are allowed.
-        """
-        if not self.is_trading_day():
-            return False
-
-        now_et = datetime.now(ET)
-        current_time = now_et.time()
-        return self._window_start <= current_time < self._window_end
+    # ── Time Helpers ──────────────────────────────────────────────────────
 
     def is_in_premarket(self) -> bool:
-        """
-        Check if we're in the pre-market scanning window.
-
-        Returns True between premarket_scan_start and trading_window_start ET,
-        but only on valid trading days.
-        """
+        """Check if we're before market open (9:30 AM ET) on a trading day."""
         if not self.is_trading_day():
             return False
 
         now_et = datetime.now(ET)
         current_time = now_et.time()
-        return self._premarket_start <= current_time < self._window_start
-
-    def is_in_any_scan_window(self) -> bool:
-        """Check if we're in any scanning window (premarket or active)."""
-        return self.is_in_premarket() or self.is_in_trading_window()
+        return self._premarket_start <= current_time < time(9, 30)
 
     def is_market_open(self) -> bool:
         """
@@ -247,29 +213,6 @@ class BotScheduler:
         market_open = time(9, 30)
         market_close = time(16, 0)
         return market_open <= current_time < market_close
-
-    def time_until_window_open(self) -> Optional[float]:
-        """
-        Get seconds until trading window opens.
-
-        Returns None if window is already open or it's not a trading day.
-        """
-        if not self.is_trading_day():
-            return None
-
-        now_et = datetime.now(ET)
-        current_time = now_et.time()
-        if current_time >= self._window_start:
-            return None
-
-        # Calculate seconds until window start
-        window_dt = now_et.replace(
-            hour=self._window_start.hour,
-            minute=self._window_start.minute,
-            second=0,
-            microsecond=0,
-        )
-        return (window_dt - now_et).total_seconds()
 
     # ── Job Runners (with error handling) ────────────────────────────────
 
@@ -322,24 +265,6 @@ class BotScheduler:
                 await self._daily_reset_callback()
             except Exception as e:
                 logger.error(f"Daily reset error: {e}")
-
-    def set_full_day_trading(self, enabled: bool) -> None:
-        """Switch between early window and full day trading at runtime."""
-        self.config.full_day_trading = enabled
-        if enabled:
-            self._window_start = time(9, 30)
-            self._window_end = time(15, 55)
-            logger.info("[SCHEDULER] Switched to full day trading: 9:30 AM - 3:55 PM ET")
-        else:
-            self._window_start = self._parse_time(self.config.trading_window_start)
-            self._window_end = self._parse_time(self.config.trading_window_end)
-            logger.info(
-                f"[SCHEDULER] Switched to early window: "
-                f"{self.config.trading_window_start}-{self.config.trading_window_end} ET"
-            )
-        # Reschedule jobs with new window
-        if self._is_running:
-            self.setup_jobs()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 

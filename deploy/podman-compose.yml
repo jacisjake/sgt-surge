@@ -11,7 +11,8 @@ services:
       - ../.env
     environment:
       - TZ=America/New_York
-    network_mode: host
+    ports:
+      - "8080:8080"
     volumes:
       - swing-trader-state:/app/state
       - swing-trader-logs:/app/logs

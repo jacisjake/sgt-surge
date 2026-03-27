@@ -5,15 +5,21 @@ Enters on the initial surge — no pullback required. For stocks that are
 actively breaking out with strong momentum, volume, and VWAP confirmation.
 Highly selective — fires rarely on the strongest setups only.
 
+Trade-count-aware entry logic:
+- 1st trade: Must be near daily HOD (within 5%) — the real surge
+- 2nd trade: HOD filter relaxed, but requires stronger momentum (3x volume, 3% ROC)
+- 3rd+ trade: Blocked — two chances is enough
+
 Entry conditions (ALL must be true):
-1. Price near HOD: within 3% of the 20-bar high
+1. Price near recent high: within 8% of the 10-bar high
 2. Price above VWAP: trading above institutional fair value
-3. RSI sweet spot: between 55-80 (momentum without exhaustion)
-4. Volume surge: current bar > 1.5x 20-bar volume SMA
-5. Price momentum: 10-bar ROC > 1.5%
+3. RSI sweet spot: between 55-90 (momentum without exhaustion)
+4. Volume surge: current bar > 1.5x 50-bar volume SMA (3x for 2nd trade)
+5. Price momentum: 10-bar ROC > 1.5% (3% for 2nd trade)
 6. Bar closing strength: close in upper 60% of bar range
 
 Stop: entry - (ATR × 2.0)
+Target: 3:1 R/R
 Exit: 2 consecutive bar closes below VWAP, RSI < 40, or price below 10-bar low
 """
 
@@ -55,6 +61,10 @@ class MomentumSurgeStrategy(SignalGenerator):
     Enters when a stock is actively surging with strong momentum indicators.
     Uses VWAP (Volume Weighted Average Price) as the momentum confirmation
     instead of MACD — VWAP responds instantly with no warmup lag.
+
+    Trade-count-aware: applies different filters for 1st vs 2nd entries
+    on the same symbol to allow valid second-wave surges while blocking
+    faded chop re-entries.
     """
 
     def __init__(
@@ -62,15 +72,20 @@ class MomentumSurgeStrategy(SignalGenerator):
         rsi_period: int = 14,
         atr_period: int = 14,
         atr_stop_multiplier: float = 2.0,
-        volume_period: int = 20,
+        volume_period: int = 50,
         volume_multiplier: float = 1.5,
         roc_period: int = 10,
         roc_min: float = 0.015,
         rsi_min: float = 55.0,
-        rsi_max: float = 80.0,
-        hod_proximity: float = 0.03,
-        risk_reward_target: float = 10.0,
+        rsi_max: float = 90.0,
+        hod_proximity: float = 0.08,
+        daily_hod_max_drop: float = 0.05,
+        risk_reward_target: float = 3.0,
         min_signal_strength: float = 0.5,
+        max_trades_per_symbol: int = 2,
+        # 2nd-trade thresholds (stricter momentum required)
+        second_trade_volume_multiplier: float = 3.0,
+        second_trade_roc_min: float = 0.03,
         # Accept but ignore legacy MACD params for backward compat
         macd_fast: int = 8,
         macd_slow: int = 21,
@@ -87,8 +102,12 @@ class MomentumSurgeStrategy(SignalGenerator):
         self.rsi_min = rsi_min
         self.rsi_max = rsi_max
         self.hod_proximity = hod_proximity
+        self.daily_hod_max_drop = daily_hod_max_drop
         self.risk_reward_target = risk_reward_target
         self.min_signal_strength = min_signal_strength
+        self.max_trades_per_symbol = max_trades_per_symbol
+        self.second_trade_volume_multiplier = second_trade_volume_multiplier
+        self.second_trade_roc_min = second_trade_roc_min
 
         self.min_periods = max(volume_period, atr_period, roc_period) + 10
 
@@ -98,8 +117,27 @@ class MomentumSurgeStrategy(SignalGenerator):
         bars: pd.DataFrame,
         current_price: Optional[float] = None,
         has_catalyst: bool = False,
+        symbol_trade_count: int = 0,
     ) -> Optional[Signal]:
-        """Generate a momentum surge entry signal."""
+        """Generate a momentum surge entry signal.
+
+        Args:
+            symbol: Stock ticker
+            bars: OHLCV DataFrame
+            current_price: Optional live price override
+            has_catalyst: Whether stock has news catalyst
+            symbol_trade_count: How many completed trades on this symbol today
+        """
+        # 3rd+ trade on same symbol: blocked
+        if symbol_trade_count >= self.max_trades_per_symbol:
+            logger.debug(
+                f"[SURGE] {symbol}: blocked — {symbol_trade_count} trades "
+                f"already today (max {self.max_trades_per_symbol})"
+            )
+            return None
+
+        is_second_trade = symbol_trade_count >= 1
+
         if not self.validate_bars(bars, self.min_periods):
             return None
 
@@ -129,21 +167,41 @@ class MomentumSurgeStrategy(SignalGenerator):
         cur_avg_volume = float(avg_volume.iloc[-1])
         cur_roc = float(roc.iloc[-1])
 
-        # 20-bar high (high of day proxy on 5-min bars)
-        bar_high_20 = float(high.iloc[-20:].max())
+        # 10-bar high (recent trend high — avoids anchoring to distant spikes)
+        bar_high_10 = float(high.iloc[-10:].max())
+
+        # Daily HOD (true intraday high)
+        bars_et = bars.index.tz_convert("America/New_York")
+        today = bars_et[-1].date()
+        today_mask = bars_et.date == today
+        daily_hod = float(high[today_mask].max()) if today_mask.any() else bar_high_10
+        drop_from_hod = (daily_hod - current) / daily_hod if daily_hod > 0 else 0
 
         # ── Entry conditions ────────────────────────────────────────────
 
-        # 1. Price near HOD (within hod_proximity of 20-bar high)
-        if bar_high_20 > 0 and (bar_high_20 - current) / bar_high_20 > self.hod_proximity:
+        # 1. Price near recent high (within hod_proximity of 10-bar high)
+        if bar_high_10 > 0 and (bar_high_10 - current) / bar_high_10 > self.hod_proximity:
             logger.debug(
                 f"[SURGE] {symbol}: price ${current:.2f} too far from "
-                f"20-bar high ${bar_high_20:.2f} "
-                f"({(bar_high_20 - current) / bar_high_20:.1%} > {self.hod_proximity:.0%})"
+                f"10-bar high ${bar_high_10:.2f} "
+                f"({(bar_high_10 - current) / bar_high_10:.1%} > {self.hod_proximity:.0%})"
             )
             return None
 
-        # 2. Price above VWAP (trading above institutional fair value)
+        # 2. Daily HOD proximity — trade-count-aware
+        if not is_second_trade:
+            # 1st trade: must be near daily HOD
+            if daily_hod > 0 and drop_from_hod > self.daily_hod_max_drop:
+                logger.debug(
+                    f"[SURGE] {symbol}: price ${current:.2f} faded from "
+                    f"daily HOD ${daily_hod:.2f} "
+                    f"({drop_from_hod:.1%} drop > {self.daily_hod_max_drop:.0%} max)"
+                )
+                return None
+        # 2nd trade: no daily HOD filter — allow second-wave entries
+        # but requires stronger momentum (checked below in vol/ROC)
+
+        # 3. Price above VWAP (trading above institutional fair value)
         if np.isnan(cur_vwap) or cur_vwap <= 0:
             logger.debug(f"[SURGE] {symbol}: VWAP unavailable")
             return None
@@ -156,7 +214,7 @@ class MomentumSurgeStrategy(SignalGenerator):
 
         price_vs_vwap = (current - cur_vwap) / cur_vwap
 
-        # 3. RSI in sweet spot
+        # 4. RSI in sweet spot
         if cur_rsi < self.rsi_min or cur_rsi > self.rsi_max:
             logger.debug(
                 f"[SURGE] {symbol}: RSI {cur_rsi:.1f} outside "
@@ -164,23 +222,29 @@ class MomentumSurgeStrategy(SignalGenerator):
             )
             return None
 
-        # 4. Volume surge
+        # 5. Volume surge — stricter for 2nd trade
         volume_ratio = cur_volume / cur_avg_volume if cur_avg_volume > 0 else 0
-        if volume_ratio < self.volume_multiplier:
+        required_vol = (self.second_trade_volume_multiplier if is_second_trade
+                        else self.volume_multiplier)
+        if volume_ratio < required_vol:
             logger.debug(
                 f"[SURGE] {symbol}: volume ratio {volume_ratio:.1f}x "
-                f"< {self.volume_multiplier}x required"
+                f"< {required_vol}x required"
+                f"{' (2nd trade)' if is_second_trade else ''}"
             )
             return None
 
-        # 5. Price momentum (ROC)
-        if cur_roc < self.roc_min:
+        # 6. Price momentum (ROC) — stricter for 2nd trade
+        required_roc = (self.second_trade_roc_min if is_second_trade
+                        else self.roc_min)
+        if cur_roc < required_roc:
             logger.debug(
-                f"[SURGE] {symbol}: ROC {cur_roc:.1%} < {self.roc_min:.0%} min"
+                f"[SURGE] {symbol}: ROC {cur_roc:.1%} < {required_roc:.0%} min"
+                f"{' (2nd trade)' if is_second_trade else ''}"
             )
             return None
 
-        # 6. Bar closing strength — close in upper 60% of bar range
+        # 7. Bar closing strength — close in upper 60% of bar range
         cur_high = float(high.iloc[-1])
         cur_low = float(low.iloc[-1])
         cur_close = float(close.iloc[-1])
@@ -195,8 +259,9 @@ class MomentumSurgeStrategy(SignalGenerator):
                 return None
 
         # ── All conditions met — calculate signal ───────────────────────
+        trade_label = f"2nd-trade " if is_second_trade else ""
         logger.info(
-            f"[SURGE] {symbol}: ENTRY signal @ ${current:.2f} | "
+            f"[SURGE] {symbol}: {trade_label}ENTRY signal @ ${current:.2f} | "
             f"VWAP=${cur_vwap:.2f} (+{price_vs_vwap:.1%}) | "
             f"RSI={cur_rsi:.1f} | vol={volume_ratio:.1f}x | ROC={cur_roc:.1%}"
         )
@@ -232,7 +297,10 @@ class MomentumSurgeStrategy(SignalGenerator):
                 "volume_ratio": round(volume_ratio, 1),
                 "roc_10": round(cur_roc * 100, 2),
                 "atr": round(cur_atr, 4),
-                "bar_high_20": round(bar_high_20, 2),
+                "bar_high_10": round(bar_high_10, 2),
+                "daily_hod": round(daily_hod, 2),
+                "drop_from_hod": round(drop_from_hod * 100, 1),
+                "symbol_trade_count": symbol_trade_count,
             },
         )
 

@@ -148,7 +148,7 @@ class MomentumScreener:
         max_price: float = 10.0,
         preferred_min_price: float = 2.0,
         min_change_pct: float = 10.0,
-        min_relative_volume: float = 5.0,
+        min_dollar_volume: float = 500_000,
         min_float_millions: float = 0.5,
         enable_float_filter: bool = True,
         top_n: int = 20,
@@ -163,14 +163,14 @@ class MomentumScreener:
             preferred_min_price: Preferred minimum — stocks above this get priority
                 in sorting. $1-$2 stocks are included but ranked lower.
             min_change_pct: Minimum % gain today (10%)
-            min_relative_volume: Minimum relative volume vs 20-day avg (5x)
+            min_dollar_volume: Minimum dollar volume today (price * volume) for liquidity
             min_float_millions: Minimum float in millions (0.5M floor for liquidity)
             enable_float_filter: Whether to filter by float
             top_n: Number of gainers to fetch
             max_results: Maximum candidates to return
 
         Returns:
-            List of MomentumCandidate sorted by relative volume (best first),
+            List of MomentumCandidate sorted by dollar volume (best first),
             with $2+ stocks weighted higher than $1-$2 stocks.
         """
         logger.info(f"[SCANNER] Running momentum scan...")
@@ -227,22 +227,22 @@ class MomentumScreener:
 
         logger.info(f"[SCANNER] Enriched candidates: {len(candidates)}")
 
-        # Step 5: Apply remaining filters
+        # Step 5: Apply remaining filters (dollar volume + float)
         final = self._apply_filters(
             candidates,
-            min_relative_volume=min_relative_volume,
+            min_dollar_volume=min_dollar_volume,
             min_float_millions=min_float_millions,
             enable_float_filter=enable_float_filter,
         )
 
-        # Step 6: Sort by relative volume with price preference weighting
-        # Stocks >= preferred_min_price get full relVol score
+        # Step 6: Sort by dollar volume with price preference weighting
+        # Stocks >= preferred_min_price get full score
         # Stocks below preferred_min_price get 50% weight (still included, just ranked lower)
         def _sort_key(c):
-            rv = c.relative_volume or 0
+            dv = (c.price * c.volume) if c.volume else 0
             if c.price < preferred_min_price:
-                rv *= 0.5  # Discount sub-$2 stocks in ranking
-            return rv
+                dv *= 0.5  # Discount sub-$2 stocks in ranking
+            return dv
 
         final.sort(key=_sort_key, reverse=True)
         final = final[:max_results]
@@ -250,11 +250,12 @@ class MomentumScreener:
         # Log results
         for c in final:
             float_str = f"{c.float_millions:.1f}M" if c.float_millions else "N/A"
+            dollar_vol = (c.price * c.volume / 1_000_000) if c.volume else 0
             news_str = f" NEWS: {c.news_headline[:50]}..." if c.has_catalyst and c.news_headline else ""
             logger.info(
                 f"  [SCANNER] {c.symbol}: ${c.price:.2f} "
                 f"+{c.change_pct:.1f}% "
-                f"relVol={c.relative_volume:.1f}x "
+                f"$vol={dollar_vol:.1f}M "
                 f"float={float_str} "
                 f"{'PASS' if c.passes_all_filters else 'PARTIAL'}"
                 f"{news_str}"
@@ -339,7 +340,7 @@ class MomentumScreener:
         so we rely on TradingView exclusively.
 
         Returns:
-            True if before 7:00 AM ET (trading_window_start)
+            True if before 9:30 AM ET (market open)
         """
         et = pytz.timezone("US/Eastern")
         now_et = datetime.now(et)
@@ -464,18 +465,16 @@ class MomentumScreener:
     def _apply_filters(
         self,
         candidates: list[MomentumCandidate],
-        min_relative_volume: float = 5.0,
+        min_dollar_volume: float = 500_000,
         min_float_millions: float = 0.5,
         enable_float_filter: bool = True,
     ) -> list[MomentumCandidate]:
         """
-        Apply the remaining filters (relative volume, float floor).
-
-        Candidates that partially pass are still included but marked.
+        Apply liquidity filters (dollar volume, float floor).
 
         Args:
             candidates: Enriched candidates
-            min_relative_volume: Minimum relative volume threshold
+            min_dollar_volume: Minimum dollar volume (price * volume) today
             min_float_millions: Minimum float in millions (liquidity floor)
             enable_float_filter: Whether to apply float filter
 
@@ -487,9 +486,12 @@ class MomentumScreener:
         for c in candidates:
             failures = []
 
-            # Relative volume filter
-            if c.relative_volume is not None and c.relative_volume < min_relative_volume:
-                failures.append(f"relVol={c.relative_volume:.1f}x < {min_relative_volume}x")
+            # Dollar volume filter (activity + liquidity)
+            dollar_vol = (c.price * c.volume) if c.volume and c.price else 0
+            if dollar_vol < min_dollar_volume:
+                failures.append(
+                    f"$vol=${dollar_vol/1000:.0f}K < ${min_dollar_volume/1000:.0f}K"
+                )
 
             # Float floor filter (reject micro-floats with too little liquidity)
             if enable_float_filter and c.float_shares is not None:
@@ -500,20 +502,25 @@ class MomentumScreener:
             c.filter_failures = failures
             c.passes_all_filters = len(failures) == 0
 
-            # Include candidates that pass relative volume at minimum
-            # Float data might be missing, so we're lenient there
-            rv_passes = c.relative_volume is None or c.relative_volume >= min_relative_volume
+            dv_passes = dollar_vol >= min_dollar_volume
             float_passes = (
                 not enable_float_filter
                 or c.float_shares is None  # Missing data = lenient
                 or (c.float_shares / 1_000_000) >= min_float_millions
             )
 
-            if rv_passes and float_passes:
+            if dv_passes and float_passes:
                 results.append(c)
-            elif rv_passes:
-                # Passes volume but not float — still include as partial match
+            elif dv_passes:
+                # Passes dollar volume but not float — still include
                 results.append(c)
+            else:
+                float_str = f"{c.float_shares / 1_000_000:.1f}M" if c.float_shares else "N/A"
+                logger.info(
+                    f"  [SCANNER] REJECTED {c.symbol}: ${c.price:.2f} "
+                    f"+{c.change_pct:.1f}% $vol=${dollar_vol/1000:.0f}K "
+                    f"float={float_str} | {', '.join(failures)}"
+                )
 
         return results
 

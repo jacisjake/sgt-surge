@@ -19,7 +19,7 @@ class BotConfig(Settings):
     Momentum day trading bot configuration.
 
     Strategy: Ross Cameron-style pullback entries on low-float momentum stocks.
-    Timeframe: 5-minute bars during 7:00-10:00 AM ET window.
+    Timeframe: 5-minute bars, 6:00 AM - 3:55 PM ET.
     Goal: One high-quality trade per day, 10% account growth.
     """
 
@@ -57,33 +57,21 @@ class BotConfig(Settings):
         description="How often to refresh scanner results during trading window",
     )
 
-    # ── Trading Window (Eastern Time) ───────────────────────────────────
+    # ── Schedule (Eastern Time) ──────────────────────────────────────────
 
     premarket_scan_start: str = Field(
         default="06:00",
         description="When to start pre-market scanning (ET, HH:MM)",
-    )
-    trading_window_start: str = Field(
-        default="07:00",
-        description="Start of active trading window (ET, HH:MM)",
-    )
-    trading_window_end: str = Field(
-        default="10:00",
-        description="End of active trading window (ET, HH:MM)",
-    )
-    full_day_trading: bool = Field(
-        default=False,
-        description="If True, trade the full market day (9:30 AM - 3:55 PM ET) instead of the early window",
     )
 
     # ── Momentum Scanner Settings ───────────────────────────────────────
     # Ross Cameron's 5 pillars: price, float, relative volume, change%, catalyst
 
     scanner_min_price: float = Field(
-        default=1.0,
+        default=2.50,
         ge=0.50,
         le=20.0,
-        description="Minimum stock price for scanner ($1 floor, prefer $2+)",
+        description="Minimum stock price for scanner ($2.50 floor)",
     )
     scanner_preferred_min_price: float = Field(
         default=2.0,
@@ -103,11 +91,11 @@ class BotConfig(Settings):
         le=50.0,
         description="Minimum % gain today to qualify (already moving)",
     )
-    scanner_min_relative_volume: float = Field(
-        default=5.0,
-        ge=1.5,
-        le=20.0,
-        description="Minimum relative volume (today vs 20-day avg, 5x = strong interest)",
+    scanner_min_dollar_volume: float = Field(
+        default=500_000,
+        ge=50_000,
+        le=50_000_000,
+        description="Minimum dollar volume traded today (price * volume) for liquidity",
     )
     scanner_min_float_millions: float = Field(
         default=0.5,
@@ -201,10 +189,10 @@ class BotConfig(Settings):
         description="Entry timeframe for signals (5-min bars for day trading)",
     )
     stock_atr_stop_multiplier: float = Field(
-        default=1.0,
+        default=1.5,
         ge=0.5,
         le=4.0,
-        description="ATR multiplier for stop-loss (tight = cut losers fast)",
+        description="ATR multiplier for stop-loss",
     )
     atr_period: int = Field(
         default=14,

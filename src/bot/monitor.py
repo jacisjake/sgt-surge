@@ -11,13 +11,9 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
-import pytz
-
-from src.bot.signals.base import Signal, SignalDirection, SignalGenerator
-from src.core.tastytrade_client import TastytradeClient, NYSE_HOLIDAYS
+from src.bot.signals.base import SignalDirection, SignalGenerator
+from src.core.tastytrade_client import TastytradeClient
 from src.core.position_manager import Position, PositionManager, PositionSide
-
-ET = pytz.timezone("America/New_York")
 
 
 @dataclass
@@ -57,7 +53,6 @@ class PositionMonitor:
         client: TastytradeClient,
         position_manager: PositionManager,
         strategies: Optional[dict[str, SignalGenerator]] = None,
-        trading_window_end: str = "10:00",
     ):
         """
         Initialize position monitor.
@@ -66,16 +61,10 @@ class PositionMonitor:
             client: tastytrade API client
             position_manager: Position tracking
             strategies: Optional dict of strategy name -> generator for exit signals
-            trading_window_end: End of trading window (HH:MM ET) for time-based exit
         """
         self.client = client
         self.position_manager = position_manager
         self.strategies = strategies or {}
-
-        # Parse trading window end for time-based exit
-        parts = trading_window_end.split(":")
-        from datetime import time
-        self._window_end = time(int(parts[0]), int(parts[1]))
 
     async def check_all_positions(self) -> list[ExitSignal]:
         """
@@ -153,16 +142,6 @@ class PositionMonitor:
 
         position.update_price(price)
 
-        # Time-based exit
-        if self._is_past_trading_window():
-            return ExitSignal(
-                symbol=position.symbol,
-                reason=f"Time exit: past trading window ({self._window_end.strftime('%H:%M')} ET)",
-                current_price=price,
-                position=position,
-                urgency="immediate",
-            )
-
         # Breakeven stop adjustment
         self._adjust_progressive_trail(position)
 
@@ -208,22 +187,11 @@ class PositionMonitor:
         Check if a position should exit.
 
         Checks in order of urgency:
-        1. Time-based exit (past trading window)
-        2. Stop-loss (immediate)
-        3. Take-profit (immediate)
-        4. Trailing stop (immediate)
-        5. Strategy exit signal (normal)
+        1. Stop-loss (immediate)
+        2. Take-profit (immediate)
+        3. Trailing stop (immediate)
+        4. Strategy exit signal (normal)
         """
-        # Check time-based exit first (day trading: close after window)
-        if self._is_past_trading_window():
-            return ExitSignal(
-                symbol=position.symbol,
-                reason=f"Time exit: past trading window ({self._window_end.strftime('%H:%M')} ET)",
-                current_price=current_price,
-                position=position,
-                urgency="immediate",
-            )
-
         # Check and apply breakeven stop after 1R profit
         self._adjust_progressive_trail(position)
 
@@ -276,16 +244,15 @@ class PositionMonitor:
         """
         Progressive R-based trailing stop.
 
-        From MACD_BOT_PROMPT.md exit rules:
         - At 1R profit: move stop to breakeven (entry price)
-        - For each additional 0.5R: trail stop up by 0.25R
+        - For each additional 0.5R: trail stop up by 0.50R
 
         Examples (LONG, entry=$5.00, initial stop=$4.70, 1R=$0.30):
           Price $5.30 (1.0R) -> stop = $5.00 (breakeven)
-          Price $5.45 (1.5R) -> stop = $5.075 (+0.25R)
-          Price $5.60 (2.0R) -> stop = $5.15 (+0.50R)
-          Price $5.75 (2.5R) -> stop = $5.225 (+0.75R)
-          Price $5.90 (3.0R) -> stop = $5.30 (+1.00R)
+          Price $5.45 (1.5R) -> stop = $5.15 (+0.50R)
+          Price $5.60 (2.0R) -> stop = $5.30 (+1.00R)
+          Price $5.75 (2.5R) -> stop = $5.45 (+1.50R)
+          Price $5.90 (3.0R) -> stop = $5.60 (+2.00R)
 
         Stop only ratchets up (for longs), never down.
         """
@@ -301,9 +268,9 @@ class PositionMonitor:
         if r_multiple < 1.0:
             return
 
-        # steps_above_1r = floor((r - 1.0) / 0.5), trail = steps * 0.25R
+        # steps_above_1r = floor((r - 1.0) / 0.5), trail = steps * 0.50R
         steps_above_1r = int((r_multiple - 1.0) / 0.5)
-        trail_r = steps_above_1r * 0.25
+        trail_r = steps_above_1r * 0.50
 
         if position.side == PositionSide.LONG:
             new_stop = round(position.entry_price + (trail_r * initial_risk), 2)
@@ -323,26 +290,6 @@ class PositionMonitor:
                     f"[TRAIL] {position.symbol}: Stop lowered ${old_stop:.2f} -> "
                     f"${new_stop:.2f} (profit={r_multiple:.1f}R, trail=-{trail_r:.2f}R)"
                 )
-
-    def _is_past_trading_window(self) -> bool:
-        """
-        Check if current time is past the trading window end (ET).
-
-        Uses schedule-based NYSE holiday list to detect holidays
-        (don't force-close positions on non-trading days).
-        """
-        now_et = datetime.now(ET)
-
-        # Weekend check (fast path)
-        if now_et.weekday() >= 5:
-            return False
-
-        # Holiday check — don't trigger time exit on non-trading days
-        if now_et.date() in NYSE_HOLIDAYS:
-            return False
-
-        current_time = now_et.time()
-        return current_time >= self._window_end
 
     async def _check_strategy_exit(self, position: Position) -> Optional[str]:
         """

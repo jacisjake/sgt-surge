@@ -285,7 +285,7 @@ class PositionManager:
             symbol = bp["symbol"]
             if symbol not in self.positions:
                 # Position opened outside our system
-                self.positions[symbol] = Position(
+                pos = Position(
                     symbol=symbol,
                     side=PositionSide.LONG if bp["qty"] > 0 else PositionSide.SHORT,
                     qty=abs(bp["qty"]),
@@ -293,7 +293,9 @@ class PositionManager:
                     entry_time=datetime.now(),  # Unknown actual entry time
                     current_price=bp["current_price"],
                 )
-                logger.info(f"Synced existing position: {symbol}")
+                pos.strategy = "momentum_surge"
+                self.positions[symbol] = pos
+                logger.info(f"Synced existing position: {symbol} (strategy=momentum_surge)")
             else:
                 # Update existing position
                 self.positions[symbol].update_price(bp["current_price"])

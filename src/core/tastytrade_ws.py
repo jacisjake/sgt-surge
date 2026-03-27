@@ -1,7 +1,7 @@
 """
 DXLink streaming client + order fill polling for tastytrade.
 
-Replaces AlpacaWSClient with:
+DXLink WebSocket client:
 - DXLink (via tastytrade SDK) for real-time 5-min candles and quotes
 - REST polling for order fill notifications (only when pending orders exist)
 - No news stream (tastytrade has no news API)
@@ -494,7 +494,7 @@ class TastytradeWSClient:
     @staticmethod
     def _normalize_candle(candle) -> Optional[dict]:
         """
-        Convert DXLink Candle event to Alpaca-compatible bar format.
+        Convert DXLink Candle event to normalized bar format.
 
         Returns dict matching: {"T":"b", "S":"AAPL", "o":..., "h":..., ...}
         """
@@ -542,7 +542,7 @@ class TastytradeWSClient:
     @staticmethod
     def _normalize_quote(quote) -> Optional[dict]:
         """
-        Convert DXLink Quote event to Alpaca-compatible quote format.
+        Convert DXLink Quote event to normalized quote format.
 
         Returns dict matching: {"T":"q", "S":"AAPL", "bp":..., "ap":..., ...}
         """
