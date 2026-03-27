@@ -1,1 +1,1 @@
-"""Test suite for swing-trader."""
+"""Test suite for sgt-surge."""

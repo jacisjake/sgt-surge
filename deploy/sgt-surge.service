@@ -1,5 +1,5 @@
 [Unit]
-Description=Swing Trader Bot (Podman)
+Description=Sgt Surge Bot (Podman)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,14 +7,14 @@ Wants=network-online.target
 Type=simple
 Restart=always
 RestartSec=30
-WorkingDirectory=/opt/swing-trader/deploy
+WorkingDirectory=/opt/sgt-surge/deploy
 ExecStartPre=/usr/bin/podman-compose down
 ExecStart=/usr/bin/podman-compose up
 ExecStop=/usr/bin/podman-compose down
 TimeoutStopSec=60
 
 # Environment file with API keys
-EnvironmentFile=/opt/swing-trader/.env
+EnvironmentFile=/opt/sgt-surge/.env
 
 [Install]
 WantedBy=multi-user.target

@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.jacobmadsen.swing-trader</string>
+    <string>com.jacobmadsen.sgt-surge</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/jacobmadsen/Projects/Trading/swing-trader/venv/bin/python</string>
+        <string>/Users/jacobmadsen/Projects/Trading/sgt-surge/venv/bin/python</string>
         <string>scripts/run_bot.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/jacobmadsen/Projects/Trading/swing-trader</string>
+    <string>/Users/jacobmadsen/Projects/Trading/sgt-surge</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PYTHONPATH</key>
-        <string>/Users/jacobmadsen/Projects/Trading/swing-trader</string>
+        <string>/Users/jacobmadsen/Projects/Trading/sgt-surge</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -35,9 +35,9 @@
     <integer>30</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/jacobmadsen/Projects/Trading/swing-trader/logs/bot.log</string>
+    <string>/Users/jacobmadsen/Projects/Trading/sgt-surge/logs/bot.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/jacobmadsen/Projects/Trading/swing-trader/logs/bot.error.log</string>
+    <string>/Users/jacobmadsen/Projects/Trading/sgt-surge/logs/bot.error.log</string>
 </dict>
 </plist>

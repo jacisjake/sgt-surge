@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy swing-trader to remote Podman server
+# Deploy sgt-surge to remote Podman server
 # Usage: ./deploy-remote.sh <remote-host> [--build]
 
 set -e
@@ -14,9 +14,9 @@ if [ -z "$REMOTE_HOST" ]; then
 fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_DIR="/opt/swing-trader"
+REMOTE_DIR="/opt/sgt-surge"
 
-echo "=== Deploying swing-trader to $REMOTE_HOST ==="
+echo "=== Deploying sgt-surge to $REMOTE_HOST ==="
 
 # Create remote directory structure
 echo "Creating remote directories..."
@@ -56,7 +56,7 @@ ssh "$REMOTE_HOST" << EOF
     podman-compose down 2>/dev/null || true
 
     # Build if requested or if image doesn't exist
-    if [ "$BUILD_FLAG" = "--build" ] || ! podman image exists swing-trader-bot:latest; then
+    if [ "$BUILD_FLAG" = "--build" ] || ! podman image exists sgt-surge-bot:latest; then
         echo "Building image..."
         podman-compose build
     fi
@@ -68,15 +68,15 @@ ssh "$REMOTE_HOST" << EOF
     # Show status
     echo ""
     echo "=== Container Status ==="
-    podman ps -a --filter "name=swing-trader"
+    podman ps -a --filter "name=sgt-surge"
 
     echo ""
     echo "=== Recent Logs ==="
     sleep 2
-    podman logs --tail 20 swing-trader-bot
+    podman logs --tail 20 sgt-surge-bot
 EOF
 
 echo ""
 echo "=== Deployment Complete ==="
-echo "View logs: ssh $REMOTE_HOST 'podman logs -f swing-trader-bot'"
+echo "View logs: ssh $REMOTE_HOST 'podman logs -f sgt-surge-bot'"
 echo "Stop: ssh $REMOTE_HOST 'cd $REMOTE_DIR/deploy && podman-compose down'"

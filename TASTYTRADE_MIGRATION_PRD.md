@@ -1,7 +1,7 @@
 # Product Requirements Document: Alpaca to tastytrade Migration
 
 ## Executive Summary
-Complete replacement of Alpaca broker integration with tastytrade in the swing-trader bot. No broker abstraction layer - direct tastytrade implementation only. TradingView remains the sole scanner.
+Complete replacement of Alpaca broker integration with tastytrade in the sgt-surge bot. No broker abstraction layer - direct tastytrade implementation only. TradingView remains the sole scanner.
 
 ## Business Context
 - **Current State**: Bot uses Alpaca for trading and market data
@@ -158,7 +158,7 @@ TRADING_MODE=paper  # or live
 - **Token refresh**: Generates a new token (cannot extend existing)
 - **Header**: `Authorization: Bearer [access_token]`
 - **OAuth2 app**: Optional — only needed for third-party integrations, not personal use
-- **Required headers**: `User-Agent: swing-trader/1.0`, `Content-Type: application/json`, `Accept: application/json`
+- **Required headers**: `User-Agent: sgt-surge/1.0`, `Content-Type: application/json`, `Accept: application/json`
 
 ### 5. Fractional / Notional Orders
 - **Order type**: `Notional Market` — uses `value` (dollar amount) instead of `quantity`

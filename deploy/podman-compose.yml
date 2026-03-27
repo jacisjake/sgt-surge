@@ -1,11 +1,11 @@
 version: "3"
 
 services:
-  swing-trader:
+  sgt-surge:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: swing-trader-bot
+    container_name: sgt-surge-bot
     restart: always
     env_file:
       - ../.env
@@ -14,8 +14,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - swing-trader-state:/app/state
-      - swing-trader-logs:/app/logs
+      - sgt-surge-state:/app/state
+      - sgt-surge-logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/api/status || exit 1"]
       interval: 60s
@@ -24,5 +24,5 @@ services:
       start_period: 30s
 
 volumes:
-  swing-trader-state:
-  swing-trader-logs:
+  sgt-surge-state:
+  sgt-surge-logs:

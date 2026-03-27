@@ -18,8 +18,8 @@ sudo systemctl reload caddy
 
 ## Key Directories on Server
 
-- `/opt/swing-trader/` - Application files
-- `/opt/swing-trader/.env` - Environment variables (Alpaca keys)
+- `/opt/sgt-surge/` - Application files
+- `/opt/sgt-surge/.env` - Environment variables (Alpaca keys)
 - Container volumes for state/logs
 
 ## Trading Context

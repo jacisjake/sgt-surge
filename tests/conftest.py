@@ -1,5 +1,5 @@
 """
-Pytest fixtures for swing-trader tests.
+Pytest fixtures for sgt-surge tests.
 """
 
 from datetime import datetime, timedelta

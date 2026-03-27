@@ -1,4 +1,4 @@
-# Swing Trader
+# Sgt Surge
 
 Algorithmic day/swing trading system for Alpaca API. Designed for small accounts with aggressive risk management.
 
@@ -26,7 +26,7 @@ Algorithmic day/swing trading system for Alpaca API. Designed for small accounts
 ## Project Structure
 
 ```
-swing-trader/
+sgt-surge/
 ├── src/
 │   ├── bot/
 │   │   ├── main.py            # Main trading bot controller
@@ -67,7 +67,7 @@ swing-trader/
 ### 1. Setup
 
 ```bash
-cd swing-trader
+cd sgt-surge
 
 # Create virtual environment
 python -m venv venv
