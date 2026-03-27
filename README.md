@@ -21,7 +21,7 @@ Algorithmic momentum day-trading bot targeting low-float stocks on tastytrade. B
 
 - **Python 3.11+**
 - **tastytrade account** -- [Sign up here](https://tastytrade.com/welcome/?referralCode=5VEAT9PR62) (referral link -- helps me out if you use it!)
-- **Financial Modeling Prep API key** (free tier) -- for float data
+- **Financial Modeling Prep API key** (free tier, optional) -- for float data enrichment
 - **Podman** or **Docker** (for containerized deployment)
 
 ## Quick Start
@@ -46,9 +46,12 @@ cp .env.example .env
 Edit `.env` with your credentials:
 
 ```env
-TASTYTRADE_USERNAME=your_username
-TASTYTRADE_PASSWORD=your_password
-FMP_API_KEY=your_fmp_key
+# tastytrade OAuth (create an app at https://developer.tastytrade.com)
+TT_CLIENT_ID=your_oauth_client_id
+TT_CLIENT_SECRET=your_oauth_client_secret
+TT_REFRESH_TOKEN=your_refresh_token
+TT_ACCOUNT_NUMBER=your_account_number
+
 TRADING_MODE=paper  # or 'live'
 ```
 
