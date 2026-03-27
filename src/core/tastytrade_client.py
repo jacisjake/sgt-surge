@@ -988,9 +988,12 @@ class TastytradeClient:
 
             position_qty = 0.0
             cost_basis = 0.0
+            entry_time = ""
 
             for order in orders_list:
                 if order["side"] == "buy":
+                    if position_qty == 0:
+                        entry_time = order["time"]
                     cost_basis += order["qty"] * order["price"]
                     position_qty += order["qty"]
                 elif order["side"] == "sell" and position_qty > 0:
@@ -1009,11 +1012,14 @@ class TastytradeClient:
                         "exit_price": order["price"],
                         "pnl": pnl,
                         "pnl_pct": (pnl / sell_cost * 100) if sell_cost > 0 else 0,
+                        "entry_time": entry_time,
                         "exit_time": order["time"],
                     })
 
                     cost_basis -= sell_qty * avg_cost
                     position_qty -= sell_qty
+                    if position_qty <= 0:
+                        entry_time = ""
 
         wins = [t for t in completed_trades if t["pnl"] > 0]
         losses = [t for t in completed_trades if t["pnl"] < 0]

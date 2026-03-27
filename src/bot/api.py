@@ -1455,14 +1455,16 @@ DASHBOARD_HTML = """
                 <button class="modal-close" onclick="closeLedger()">&times;</button>
             </div>
             <div style="padding:16px;overflow-y:auto;max-height:calc(90vh - 60px)">
-                <div id="ledger-sparkline" style="width:100%;height:120px;margin-bottom:12px"></div>
+                <div id="ledger-sparkline" style="width:100%;height:120px;margin-bottom:8px"></div>
+                <div id="ledger-histogram" style="width:100%;height:100px;margin-bottom:12px"></div>
                 <table style="width:100%">
                     <thead><tr>
-                        <th style="text-align:left">Date</th>
                         <th style="text-align:left">Symbol</th>
+                        <th style="text-align:left">Entry</th>
+                        <th style="text-align:left">Exit</th>
                         <th style="text-align:right">Qty</th>
-                        <th style="text-align:right">Entry</th>
-                        <th style="text-align:right">Exit</th>
+                        <th style="text-align:right">In</th>
+                        <th style="text-align:right">Out</th>
                         <th style="text-align:right">P&amp;L</th>
                         <th style="text-align:right">%</th>
                     </tr></thead>
@@ -1941,13 +1943,18 @@ DASHBOARD_HTML = """
                 const data = await fetch('api/trades/ledger').then(r => r.json());
                 if (data.error) { alert(data.error); return; }
                 const tbody = document.getElementById('ledger-body');
+                const fmtTime = (iso) => {
+                    if (!iso) return '--';
+                    const d = new Date(iso);
+                    return d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+                };
                 tbody.innerHTML = (data.trades || []).map(t => {
                     const cls = t.pnl >= 0 ? 'positive' : 'negative';
                     const sign = t.pnl >= 0 ? '+' : '';
-                    const date = t.exit_time ? new Date(t.exit_time).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '--';
                     return `<tr>
-                        <td>${date}</td>
                         <td style="font-weight:600">${t.symbol}</td>
+                        <td style="font-size:11px">${fmtTime(t.entry_time)}</td>
+                        <td style="font-size:11px">${fmtTime(t.exit_time)}</td>
                         <td style="text-align:right">${t.qty}</td>
                         <td style="text-align:right">$${t.entry_price.toFixed(2)}</td>
                         <td style="text-align:right">$${t.exit_price.toFixed(2)}</td>
@@ -1968,12 +1975,19 @@ DASHBOARD_HTML = """
             } catch(e) { console.error('Ledger fetch failed:', e); }
         }
         let ledgerChart = null;
+        let histoChart = null;
         function renderLedgerSparkline(trades, experiment) {
             const container = document.getElementById('ledger-sparkline');
+            const histoContainer = document.getElementById('ledger-histogram');
             container.innerHTML = '';
+            histoContainer.innerHTML = '';
             if (!trades.length) return;
             const startCap = experiment.starting_capital || 250;
             const goal = experiment.goal || 25000;
+            const styles = getComputedStyle(document.documentElement);
+            const bg = styles.getPropertyValue('--card-bg').trim() || '#1a1a2e';
+            const border = styles.getPropertyValue('--border').trim() || '#2a2a4a';
+            const textSec = styles.getPropertyValue('--text-secondary').trim() || '#8888aa';
             // Build equity curve (oldest first)
             const sorted = [...trades].reverse();
             let equity = startCap;
@@ -1986,12 +2000,9 @@ DASHBOARD_HTML = """
             const byDay = {};
             series.forEach(p => { byDay[p.time] = p.value; });
             const dedupSeries = Object.entries(byDay).map(([time, value]) => ({time, value}));
-            const styles = getComputedStyle(document.documentElement);
-            const bg = styles.getPropertyValue('--card-bg').trim() || '#1a1a2e';
-            const border = styles.getPropertyValue('--border').trim() || '#2a2a4a';
-            const textSec = styles.getPropertyValue('--text-secondary').trim() || '#8888aa';
             const lastEquity = dedupSeries[dedupSeries.length - 1]?.value || startCap;
             const lineColor = lastEquity >= startCap ? '#22c55e' : '#ef4444';
+            // ── Equity curve ──
             ledgerChart = LightweightCharts.createChart(container, {
                 width: container.clientWidth,
                 height: 120,
@@ -2011,16 +2022,51 @@ DASHBOARD_HTML = """
                 priceFormat: { type: 'custom', formatter: v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0}) },
             });
             areaSeries.setData(dedupSeries);
-            // Goal line
             areaSeries.createPriceLine({ price: goal, color: 'rgba(34,197,94,0.2)', lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '$25K' });
-            // Starting capital line
             areaSeries.createPriceLine({ price: startCap, color: 'rgba(136,136,170,0.25)', lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '$' + startCap });
             areaSeries.applyOptions({ autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: goal } }) });
             ledgerChart.timeScale().fitContent();
+            // ── P&L histogram ──
+            // Aggregate daily P&L for histogram bars
+            const dailyPnl = {};
+            sorted.forEach(t => {
+                const d = (t.entry_time || t.exit_time) ? new Date(t.entry_time || t.exit_time).toISOString().split('T')[0] : null;
+                if (d) dailyPnl[d] = (dailyPnl[d] || 0) + t.pnl;
+            });
+            const histoData = Object.entries(dailyPnl)
+                .map(([time, value]) => ({ time, value: parseFloat(value.toFixed(2)), color: value >= 0 ? 'rgba(34,197,94,0.8)' : 'rgba(239,68,68,0.8)' }))
+                .sort((a, b) => a.time.localeCompare(b.time));
+            if (histoData.length === 0) return;
+            histoChart = LightweightCharts.createChart(histoContainer, {
+                width: histoContainer.clientWidth,
+                height: 100,
+                layout: { background: { color: bg }, textColor: textSec, fontSize: 10 },
+                grid: { vertLines: { visible: false }, horzLines: { color: border, style: 3 } },
+                rightPriceScale: { borderVisible: false },
+                timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true },
+                crosshair: { mode: 0 },
+                handleScale: false,
+                handleScroll: false,
+            });
+            const histoSeries = histoChart.addHistogramSeries({
+                priceFormat: { type: 'custom', formatter: v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2) },
+            });
+            histoSeries.setData(histoData);
+            // Zero line
+            histoSeries.createPriceLine({ price: 0, color: 'rgba(136,136,170,0.3)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+            histoChart.timeScale().fitContent();
+            // Sync timescales
+            ledgerChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (range && histoChart) histoChart.timeScale().setVisibleLogicalRange(range);
+            });
+            histoChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (range && ledgerChart) ledgerChart.timeScale().setVisibleLogicalRange(range);
+            });
         }
         function closeLedger() {
             document.getElementById('ledger-modal').classList.remove('active');
             if (ledgerChart) { ledgerChart.remove(); ledgerChart = null; }
+            if (histoChart) { histoChart.remove(); histoChart = null; }
         }
 
         document.getElementById('chart-modal').addEventListener('click', (e) => {
