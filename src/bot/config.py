@@ -80,10 +80,10 @@ class BotConfig(Settings):
         description="Preferred minimum price — stocks above this get priority weighting",
     )
     scanner_max_price: float = Field(
-        default=10000.0,
+        default=10.0,
         ge=2.0,
-        le=10000.0,
-        description="Maximum stock price for scanner (no practical ceiling with fractional shares)",
+        le=50.0,
+        description="Maximum stock price for scanner ($10 ceiling for low-float momentum)",
     )
     scanner_min_change_pct: float = Field(
         default=10.0,
@@ -222,10 +222,10 @@ class BotConfig(Settings):
         description="Maximum pullback retracement of surge (65% for volatile low-float stocks)",
     )
     risk_reward_target: float = Field(
-        default=10.0,
+        default=2.0,
         ge=1.0,
         le=20.0,
-        description="Take-profit safety ceiling (progressive trailing stop handles actual exits)",
+        description="Take-profit target as multiple of risk (2R = 2x stop distance)",
     )
 
     # ── Signal Filtering ────────────────────────────────────────────────

@@ -38,6 +38,7 @@ class Position:
     take_profit: Optional[float] = None
     trailing_stop_pct: Optional[float] = None
     strategy: Optional[str] = None  # Which strategy triggered the entry
+    broker_stop_order_id: Optional[str] = None  # Active stop-limit order at broker
 
     def __post_init__(self):
         """Set initial_stop_loss from stop_loss if not explicitly provided."""
@@ -203,6 +204,7 @@ class Position:
             "exit_price": self.exit_price,
             "exit_time": self.exit_time.isoformat() if self.exit_time else None,
             "exit_reason": self.exit_reason,
+            "broker_stop_order_id": self.broker_stop_order_id,
             "status": self.status.value,
             "unrealized_pnl": self.unrealized_pnl,
             "unrealized_pnl_pct": self.unrealized_pnl_pct,

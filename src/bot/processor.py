@@ -254,8 +254,9 @@ class SignalProcessor:
                 return f"R:R too low: {signal.risk_reward_ratio:.2f} < {self.config.min_risk_reward}"
 
         # Check risk percent isn't too high
-        # Allow wider stops for low-priced volatile stocks (up to 15%)
-        max_stop_pct = 0.15
+        # 7% max stop width — tight enough to protect the small account,
+        # loose enough not to reject too many valid momentum setups
+        max_stop_pct = 0.07
         if signal.risk_percent > max_stop_pct:
             return f"Stop too wide: {signal.risk_percent:.1%} risk (max {max_stop_pct:.0%})"
 

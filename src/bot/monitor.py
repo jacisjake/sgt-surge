@@ -53,6 +53,7 @@ class PositionMonitor:
         client: TastytradeClient,
         position_manager: PositionManager,
         strategies: Optional[dict[str, SignalGenerator]] = None,
+        trade_executor=None,
     ):
         """
         Initialize position monitor.
@@ -61,10 +62,12 @@ class PositionMonitor:
             client: tastytrade API client
             position_manager: Position tracking
             strategies: Optional dict of strategy name -> generator for exit signals
+            trade_executor: TradeExecutor for broker stop management
         """
         self.client = client
         self.position_manager = position_manager
         self.strategies = strategies or {}
+        self.trade_executor = trade_executor
 
     async def check_all_positions(self) -> list[ExitSignal]:
         """
@@ -242,19 +245,14 @@ class PositionMonitor:
 
     def _adjust_progressive_trail(self, position: Position) -> None:
         """
-        Progressive R-based trailing stop.
+        Breakeven stop adjustment.
 
-        - At 1R profit: move stop to breakeven (entry price)
-        - For each additional 0.5R: trail stop up by 0.50R
+        At 1R profit: move stop to breakeven (entry price) and replace
+        the broker-side stop order. No further trailing — VWAP exit
+        handles the rest.
 
-        Examples (LONG, entry=$5.00, initial stop=$4.70, 1R=$0.30):
+        Example (LONG, entry=$5.00, initial stop=$4.70, 1R=$0.30):
           Price $5.30 (1.0R) -> stop = $5.00 (breakeven)
-          Price $5.45 (1.5R) -> stop = $5.15 (+0.50R)
-          Price $5.60 (2.0R) -> stop = $5.30 (+1.00R)
-          Price $5.75 (2.5R) -> stop = $5.45 (+1.50R)
-          Price $5.90 (3.0R) -> stop = $5.60 (+2.00R)
-
-        Stop only ratchets up (for longs), never down.
         """
         if position.stop_loss is None or position.initial_stop_loss is None:
             return
@@ -268,28 +266,31 @@ class PositionMonitor:
         if r_multiple < 1.0:
             return
 
-        # steps_above_1r = floor((r - 1.0) / 0.5), trail = steps * 0.50R
-        steps_above_1r = int((r_multiple - 1.0) / 0.5)
-        trail_r = steps_above_1r * 0.50
-
+        # Already at or above breakeven — nothing to do
         if position.side == PositionSide.LONG:
-            new_stop = round(position.entry_price + (trail_r * initial_risk), 2)
-            if new_stop > position.stop_loss:
-                old_stop = position.stop_loss
-                position.stop_loss = new_stop
-                logger.info(
-                    f"[TRAIL] {position.symbol}: Stop raised ${old_stop:.2f} -> "
-                    f"${new_stop:.2f} (profit={r_multiple:.1f}R, trail=+{trail_r:.2f}R)"
-                )
-        else:  # SHORT
-            new_stop = round(position.entry_price - (trail_r * initial_risk), 2)
-            if new_stop < position.stop_loss:
-                old_stop = position.stop_loss
-                position.stop_loss = new_stop
-                logger.info(
-                    f"[TRAIL] {position.symbol}: Stop lowered ${old_stop:.2f} -> "
-                    f"${new_stop:.2f} (profit={r_multiple:.1f}R, trail=-{trail_r:.2f}R)"
-                )
+            if position.stop_loss >= position.entry_price:
+                return
+            new_stop = position.entry_price
+        else:
+            if position.stop_loss <= position.entry_price:
+                return
+            new_stop = position.entry_price
+
+        old_stop = position.stop_loss
+
+        # Replace broker stop and update local stop
+        if self.trade_executor:
+            self.trade_executor.replace_broker_stop(position, new_stop)
+            logger.info(
+                f"[BREAKEVEN] {position.symbol}: Stop moved ${old_stop:.2f} -> "
+                f"${new_stop:.2f} (breakeven at {r_multiple:.1f}R, broker stop replaced)"
+            )
+        else:
+            position.stop_loss = new_stop
+            logger.info(
+                f"[BREAKEVEN] {position.symbol}: Stop moved ${old_stop:.2f} -> "
+                f"${new_stop:.2f} (breakeven at {r_multiple:.1f}R)"
+            )
 
     async def _check_strategy_exit(self, position: Position) -> Optional[str]:
         """

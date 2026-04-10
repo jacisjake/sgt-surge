@@ -106,6 +106,7 @@ def simulate_trade(bars: pd.DataFrame, entry_idx: int, entry_price: float,
 
 def run_config(name: str, surge: MomentumSurgeStrategy, symbols: list[str],
                bars_cache: dict, min_price: float = 2.50,
+               max_price: float = 10.0,
                max_trades_per_symbol_per_day: int = 99) -> pd.DataFrame:
     """Run a single config across all symbols with per-symbol trade tracking."""
     all_trades = []
@@ -123,6 +124,9 @@ def run_config(name: str, surge: MomentumSurgeStrategy, symbols: list[str],
             cur_price = float(bars["close"].iloc[i])
 
             if min_price > 0 and cur_price < min_price:
+                continue
+
+            if max_price > 0 and cur_price > max_price:
                 continue
 
             # Get today's date for this bar

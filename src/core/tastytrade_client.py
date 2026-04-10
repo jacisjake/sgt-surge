@@ -760,19 +760,33 @@ class TastytradeClient:
         action = "Sell to Close" if is_sell else "Buy to Open"
         leg = self._build_equity_leg(symbol, qty, action)
 
-        price_value = -round(limit_price, 2) if not is_sell else round(limit_price, 2)
+        # Tastytrade requires explicit price-effect for stop-limit orders.
+        # Sells receive credit, buys pay debit. Price is always positive.
+        price_effect = "Credit" if is_sell else "Debit"
+        price_value = round(limit_price, 2)
 
         order_payload = {
             "time-in-force": "Day",
             "order-type": "Stop Limit",
             "stop-trigger": str(Decimal(str(round(stop_price, 2)))),
             "price": str(Decimal(str(price_value))),
+            "price-effect": price_effect,
             "legs": [leg],
         }
 
-        data = self._post(
-            f"/accounts/{self._acct}/orders", json_data=order_payload
-        )["data"]
+        try:
+            data = self._post(
+                f"/accounts/{self._acct}/orders", json_data=order_payload
+            )["data"]
+        except Exception as e:
+            # Capture response body for debugging
+            resp = getattr(e, "response", None)
+            body = resp.text if resp is not None else "no response"
+            logger.error(
+                f"Stop-limit order rejected for {symbol}: {e} | "
+                f"payload={order_payload} | response={body}"
+            )
+            raise
         order = data.get("order", data)
         logger.info(
             f"Stop-limit order submitted: {side} {qty} {symbol} "

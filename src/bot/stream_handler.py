@@ -207,6 +207,15 @@ class StreamHandler:
             if current_price is None:
                 return
 
+            # Price sanity check: reject if price exceeds scanner max
+            max_price = self.config.scanner_max_price
+            if current_price > max_price:
+                logger.warning(
+                    f"[STREAM] {symbol}: price ${current_price:.2f} exceeds "
+                    f"scanner max ${max_price:.2f} — skipping signal"
+                )
+                return
+
             # Generate signal
             try:
                 gen_signal = self.strategy.generate(
@@ -395,9 +404,24 @@ class StreamHandler:
         if _time.time() - last_attempt < self._exit_cooldown_seconds:
             return
 
-        # Quick exit checks (stops/targets/trailing — no expensive strategy check)
+        # Broker stop handles hard stop-loss — only check take-profit and
+        # breakeven adjustment here. The broker stop fires independently.
+        # Still run check_position_at_price for take-profit and to trigger
+        # breakeven stop adjustment at 1R.
         exit_signal = await self.monitor.check_position_at_price(symbol, price)
         if exit_signal:
+            # If the exit is a stop-loss and we have a broker stop, let the
+            # broker handle it — don't send a competing market sell
+            if (
+                "Stop-loss" in exit_signal.reason
+                and position.broker_stop_order_id
+            ):
+                logger.debug(
+                    f"[STREAM] {symbol}: stop triggered in software but broker "
+                    f"stop active (order={position.broker_stop_order_id}), deferring"
+                )
+                return
+
             self._exit_cooldown[symbol] = _time.time()
             logger.info(f"[STREAM EXIT] {symbol}: {exit_signal.reason}")
             exec_result = await self.executor.execute_exit(
@@ -417,7 +441,7 @@ class StreamHandler:
         """
         Handle order fill/cancel/reject from trade updates stream.
 
-        Replaces broker sync polling.
+        Detects broker stop-limit fills and closes positions accordingly.
 
         Update format:
         {"event": "fill", "order": {"id": "...", "symbol": "AAPL", ...},
@@ -426,6 +450,7 @@ class StreamHandler:
         event = update.get("event", "")
         order = update.get("order", {})
         symbol = order.get("symbol", "")
+        order_id = order.get("id", "")
 
         if event == "fill":
             qty = float(update.get("qty", order.get("filled_qty", 0)))
@@ -435,6 +460,27 @@ class StreamHandler:
             logger.info(
                 f"[WS FILL] {symbol}: {side} {qty} @ ${price:.2f}"
             )
+
+            # Check if this fill is from a broker stop order
+            position = self.position_manager.get_position(symbol)
+            if (
+                position
+                and position.broker_stop_order_id
+                and order_id == position.broker_stop_order_id
+            ):
+                logger.info(
+                    f"[BROKER STOP FILLED] {symbol}: stop-limit filled "
+                    f"@ ${price:.2f} (order={order_id})"
+                )
+                position.broker_stop_order_id = None
+                closed = self.position_manager.close_position(
+                    symbol=symbol,
+                    exit_price=price,
+                    reason=f"Broker stop-limit filled @ ${price:.2f}",
+                )
+                if closed:
+                    pnl = closed.realized_pnl or 0
+                    logger.info(f"  Closed {symbol}: P&L ${pnl:.2f}")
 
         elif event == "partial_fill":
             qty = float(update.get("qty", 0))

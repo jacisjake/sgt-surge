@@ -155,6 +155,7 @@ class TradingBot:
                 "momentum_pullback": self.strategy,
                 "momentum_surge": self.surge_strategy,
             },
+            trade_executor=self.executor,
         )
 
         # WebSocket client (DXLink via tastytrade SDK)
@@ -876,6 +877,9 @@ class TradingBot:
                 if symbol not in existing_symbols:
                     await self._add_default_stops(symbol)
 
+            # Reconcile broker stop orders with open positions
+            self._reconcile_broker_stops()
+
             self.bot_state.update_job_timestamp("broker_sync")
 
             logger.info(
@@ -903,6 +907,7 @@ class TradingBot:
                 position.initial_stop_loss = position.stop_loss
                 position.take_profit = position.entry_price * (1 + stop_pct * self.config.risk_reward_target)
                 position.trailing_stop_pct = None
+                self.executor._place_broker_stop(position)
                 logger.info(f"  Added default stops for {symbol} (5% fallback)")
                 return
 
@@ -913,7 +918,7 @@ class TradingBot:
             stop_mult = self.config.stock_atr_stop_multiplier
 
             # Calculate stop and target (LONG only for momentum strategy)
-            rr_target = self.config.risk_reward_target  # 10R safety ceiling
+            rr_target = self.config.risk_reward_target
             from src.core.position_manager import PositionSide
             if position.side == PositionSide.LONG:
                 position.stop_loss = position.entry_price - (atr_value * stop_mult)
@@ -928,6 +933,7 @@ class TradingBot:
             # Progressive R-based trailing handles exits now (no % trailing)
             position.trailing_stop_pct = None
 
+            self.executor._place_broker_stop(position)
             logger.info(
                 f"  Added ATR stops for {symbol}: "
                 f"SL=${position.stop_loss:.2f}, TP=${position.take_profit:.2f}"
@@ -935,6 +941,43 @@ class TradingBot:
 
         except Exception as e:
             logger.warning(f"  Could not add stops for {symbol}: {e}")
+
+    def _reconcile_broker_stops(self) -> None:
+        """
+        Reconcile broker stop orders with open positions on startup.
+
+        - If a position has no broker stop, place one.
+        - If a stop order exists at the broker for a position, record its ID.
+        - If a stop order filled while the bot was down, the position was
+          already closed by sync_with_broker (position disappeared from broker).
+        """
+        try:
+            open_orders = self.order_executor.get_open_orders()
+            # Index stop orders by symbol
+            stop_orders_by_symbol: dict[str, dict] = {}
+            for order in open_orders:
+                if order.get("type") == "stop_limit":
+                    sym = order.get("symbol", "")
+                    stop_orders_by_symbol[sym] = order
+
+            for position in self.position_manager.get_open_positions():
+                existing_stop = stop_orders_by_symbol.get(position.symbol)
+                if existing_stop:
+                    # Found an existing broker stop — adopt it
+                    position.broker_stop_order_id = existing_stop["id"]
+                    logger.info(
+                        f"[RECONCILE] {position.symbol}: adopted existing broker "
+                        f"stop (order={existing_stop['id']})"
+                    )
+                elif position.stop_loss is not None:
+                    # No broker stop — place one
+                    self.executor._place_broker_stop(position)
+                    logger.info(
+                        f"[RECONCILE] {position.symbol}: placed missing broker "
+                        f"stop @ ${position.stop_loss:.2f}"
+                    )
+        except Exception as e:
+            logger.error(f"[RECONCILE] Broker stop reconciliation error: {e}")
 
     # -- Health Check -----------------------------------------------------
 

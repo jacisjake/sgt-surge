@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from loguru import logger
+
 from src.bot.processor import TradeParams
 from src.core.order_executor import OrderExecutor, OrderResult, OrderStatus
 from src.core.position_manager import Position, PositionManager, PositionSide
@@ -132,6 +134,9 @@ class TradeExecutor:
                 strategy=trade_params.signal.strategy,
             )
 
+            # Place broker-side stop-limit order for protection
+            self._place_broker_stop(position)
+
             return ExecutionResult(
                 success=True,
                 order_result=order_result,
@@ -148,6 +153,72 @@ class TradeExecutor:
                 error=str(e),
                 timestamp=timestamp,
             )
+
+    def _stop_limit_offset(self, stop_price: float) -> float:
+        """Calculate limit offset below stop trigger for fill protection."""
+        return 0.05 if stop_price < 3.0 else 0.10
+
+    def _place_broker_stop(self, position: Position) -> None:
+        """Place a stop-limit sell order at the broker for an open position."""
+        if position.stop_loss is None:
+            return
+        try:
+            offset = self._stop_limit_offset(position.stop_loss)
+            limit_price = round(position.stop_loss - offset, 2)
+            side = "sell" if position.side == PositionSide.LONG else "buy"
+            result = self.order_executor.execute_stop_limit_order(
+                symbol=position.symbol,
+                qty=position.qty,
+                side=side,
+                stop_price=position.stop_loss,
+                limit_price=limit_price,
+            )
+            if result.success:
+                position.broker_stop_order_id = result.order_id
+                logger.info(
+                    f"[BROKER STOP] {position.symbol}: placed stop-limit "
+                    f"trigger=${position.stop_loss:.2f} limit=${limit_price:.2f} "
+                    f"(order={result.order_id})"
+                )
+            else:
+                logger.error(
+                    f"[BROKER STOP] {position.symbol}: failed to place — {result.error}"
+                )
+        except Exception as e:
+            logger.error(f"[BROKER STOP] {position.symbol}: exception — {e}")
+
+    def cancel_broker_stop(self, position: Position) -> bool:
+        """Cancel the broker-side stop order for a position. Returns True if cancelled."""
+        if not position.broker_stop_order_id:
+            return True  # Nothing to cancel
+        try:
+            success = self.order_executor.cancel_order(position.broker_stop_order_id)
+            if success:
+                logger.info(
+                    f"[BROKER STOP] {position.symbol}: cancelled "
+                    f"(order={position.broker_stop_order_id})"
+                )
+                position.broker_stop_order_id = None
+            else:
+                logger.warning(
+                    f"[BROKER STOP] {position.symbol}: cancel failed, retrying..."
+                )
+                # Retry once
+                success = self.order_executor.cancel_order(position.broker_stop_order_id)
+                if success:
+                    position.broker_stop_order_id = None
+            return success
+        except Exception as e:
+            logger.error(
+                f"[BROKER STOP] {position.symbol}: cancel exception — {e}"
+            )
+            return False
+
+    def replace_broker_stop(self, position: Position, new_stop_price: float) -> None:
+        """Cancel existing broker stop and place a new one at the updated price."""
+        self.cancel_broker_stop(position)
+        position.stop_loss = new_stop_price
+        self._place_broker_stop(position)
 
     async def execute_exit(
         self,
@@ -179,6 +250,9 @@ class TradeExecutor:
                     error=f"No position found for {symbol}",
                     timestamp=timestamp,
                 )
+
+            # Cancel broker-side stop before sending exit order
+            self.cancel_broker_stop(position)
 
             # Determine exit side
             exit_side = "sell" if position.side == PositionSide.LONG else "buy"
