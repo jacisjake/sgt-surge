@@ -56,11 +56,11 @@ def main():
 
     # ── Step 1: Get raw top gainers ───────────────────────────────────
     print("\n" + "─" * 72)
-    print("  STEP 1: TOP GAINERS (raw from Alpaca)")
+    print("  STEP 1: TOP GAINERS (raw from screener)")
     print("─" * 72)
 
-    screener = StockScreener()
-    raw_gainers = screener.get_top_gainers(top_n=20)
+    screener = MomentumScreener()
+    raw_gainers = screener.scan(top_n=20)
 
     print(f"\n  {'#':<4} {'Symbol':<10} {'Price':>8} {'Change':>10}")
     print(f"  {'─'*4} {'─'*10} {'─'*8} {'─'*10}")
