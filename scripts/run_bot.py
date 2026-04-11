@@ -24,21 +24,23 @@ from src.bot.main import TradingBot, run_bot
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Swing Trading Bot",
+        description="Sgt Surge - Momentum Day Trading Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     python scripts/run_bot.py                    # Start the bot
-    python scripts/run_bot.py --dry-run          # Show what would be monitored
-    python scripts/run_bot.py --status           # Show current status
+    python scripts/run_bot.py --dry-run          # Show config and exit
+    python scripts/run_bot.py --status           # Show account status
 
 Environment variables (or in .env):
-    TT_USERNAME          - tastytrade username
-    TT_PASSWORD          - tastytrade password
+    TT_CLIENT_ID         - tastytrade OAuth client ID
+    TT_CLIENT_SECRET     - tastytrade OAuth client secret
+    TT_REFRESH_TOKEN     - tastytrade OAuth refresh token
     TT_ACCOUNT_NUMBER    - tastytrade account number
     TRADING_MODE         - paper or live (default: paper)
-    BOT_STOCK_WATCHLIST  - Comma-separated stock symbols
-    BOT_CRYPTO_WATCHLIST - Comma-separated crypto symbols
+    FMP_API_KEY          - Financial Modeling Prep API key (optional)
+
+See .env.example for all available settings.
         """,
     )
 
