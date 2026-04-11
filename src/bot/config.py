@@ -274,17 +274,6 @@ class BotConfig(Settings):
         description="Max % of buying power to use per trade (cash account style)",
     )
 
-    # ── Crypto (disabled for day trading focus) ─────────────────────────
-
-    enable_crypto_trading: bool = Field(
-        default=False,
-        description="Enable crypto trading (disabled for momentum day trading)",
-    )
-    crypto_watchlist: str = Field(
-        default="BTC/USD,ETH/USD,SOL/USD",
-        description="Crypto symbols (not used when disabled)",
-    )
-
     # ── Watchlist (scanner-driven, no static list) ──────────────────────
 
     stock_watchlist: str = Field(
@@ -343,11 +332,6 @@ class BotConfig(Settings):
     def stock_symbols(self) -> list[str]:
         """Parse stock watchlist into list (may be empty if scanner-driven)."""
         return [s.strip().upper() for s in self.stock_watchlist.split(",") if s.strip()]
-
-    @property
-    def crypto_symbols(self) -> list[str]:
-        """Parse crypto watchlist into list."""
-        return [s.strip().upper() for s in self.crypto_watchlist.split(",") if s.strip()]
 
     @property
     def state_path(self) -> Path:
