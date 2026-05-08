@@ -79,3 +79,57 @@ class SchwabClient:
     @property
     def account_hash(self) -> Optional[str]:
         return self._account_hash
+
+    def get_account(self) -> dict:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        resp = self._client.get_account(self._account_hash, fields=["positions"])
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"get_account failed: {resp.status_code}")
+        sa = resp.json()["securitiesAccount"]
+        bal = sa.get("currentBalances", {})
+        return {
+            "equity": float(bal.get("liquidationValue", 0)),
+            "buying_power": float(bal.get("buyingPower", 0)),
+            "cash": float(bal.get("cashAvailableForTrading", 0)),
+            "daytrade_count": int(sa.get("roundTrips", 0)),
+            "is_pdt": bool(sa.get("isDayTrader", False)),
+            "type": sa.get("type", ""),
+            "status": "active",
+            "_raw_positions": sa.get("positions", []),
+        }
+
+    def get_buying_power(self) -> float:
+        return self.get_account()["buying_power"]
+
+    def get_equity(self) -> float:
+        return self.get_account()["equity"]
+
+    def get_positions(self) -> list[dict]:
+        positions = self.get_account()["_raw_positions"]
+        out = []
+        for p in positions:
+            qty = float(p.get("longQuantity", 0)) - float(p.get("shortQuantity", 0))
+            if qty == 0:
+                continue
+            mkt = float(p.get("marketValue", 0))
+            current_price = mkt / qty if qty else 0.0
+            out.append({
+                "symbol": p["instrument"]["symbol"],
+                "qty": qty,
+                "avg_entry_price": float(p.get("averagePrice", 0)),
+                "current_price": current_price,
+                "market_value": mkt,
+                "unrealized_pl": float(p.get("currentDayProfitLoss", 0)),
+                "unrealized_plpc": float(p.get("currentDayProfitLossPercentage", 0)) / 100,
+            })
+        return out
+
+    def get_position(self, symbol: str) -> Optional[dict]:
+        for p in self.get_positions():
+            if p["symbol"] == symbol:
+                return p
+        return None
+
+    def has_position(self, symbol: str) -> bool:
+        return self.get_position(symbol) is not None
