@@ -19,29 +19,23 @@ from typing import Optional
 
 from loguru import logger
 
-# Silence the tastytrade SDK's verbose debug logging (logs every WebSocket frame)
-logging.getLogger("tastytrade").setLevel(logging.WARNING)
-
 from src.bot.config import BotConfig, get_bot_config
 from src.bot.executor import TradeExecutor
 from src.bot.float_provider import FloatDataProvider
 from src.bot.monitor import PositionMonitor
-from src.bot.press_release_scanner import PressReleaseScanner
 from src.bot.processor import SignalProcessor
 from src.bot.scheduler import BotScheduler
 from src.bot.screener import MomentumScreener
 from src.bot.tradingview_screener import TradingViewScreener
 from src.bot.signals.base import Signal
-from src.bot.signals.momentum_pullback import MomentumPullbackStrategy
-from src.bot.signals.momentum_surge import MomentumSurgeStrategy
+from src.bot.signals.orb import OpeningRangeBreakout
 from src.bot.state.persistence import BotState
 from src.bot.state.trade_ledger import TradeLedger
 from src.bot.stream_handler import StreamHandler
-from src.core.regime_detector import RegimeDetector
-from src.core.tastytrade_client import TastytradeClient
+from src.core.schwab_client import SchwabClient
+from src.core.schwab_stream import SchwabStreamClient
 from src.core.order_executor import OrderExecutor
 from src.core.position_manager import PositionManager
-from src.core.tastytrade_ws import TastytradeWSClient
 from src.risk.portfolio_limits import PortfolioLimits
 from src.risk.position_sizer import PositionSizer
 
@@ -50,7 +44,7 @@ class TradingBot:
     """
     Momentum day trading bot controller.
 
-    Strategy: Ross Cameron-style momentum pullback on low-float stocks.
+    Strategy: Opening Range Breakout (ORB) on low-float stocks.
     Flow: Scanner -> Signal -> Risk Check -> Execute -> Monitor -> Exit
     Goal: One high-quality trade per day, 10% account growth.
     """
@@ -64,15 +58,27 @@ class TradingBot:
         """
         self.config = config or get_bot_config()
 
-        # Core components
-        self.client = TastytradeClient()
+        # Schwab broker
+        self.client = SchwabClient(
+            app_key=self.config.schwab_app_key,
+            app_secret=self.config.schwab_app_secret,
+            callback_url=self.config.schwab_oauth_redirect_uri,
+            token_path=self.config.schwab_token_path,
+            pinned_account_hash=self.config.schwab_account_hash,
+        )
+
         self.trade_ledger = TradeLedger(
             path="state/trades.json",
             starting_capital=400.0,
             goal=4000.0,
         )
         self.position_manager = PositionManager(trade_ledger=self.trade_ledger)
-        self.order_executor = OrderExecutor(self.client)
+
+        # Order executor with dry-run mode
+        self.order_executor = OrderExecutor(
+            client=self.client,
+            trading_mode=self.config.trading_mode,
+        )
 
         # Risk components
         self.position_sizer = PositionSizer(
@@ -104,35 +110,8 @@ class TradingBot:
             use_tradingview=self.config.use_tradingview_screener,
         )
 
-        # Press release scanner (pre-market catalyst detection)
-        self.press_release_scanner = PressReleaseScanner(
-            fmp_api_key=self.config.fmp_api_key,
-            lookback_hours=self.config.press_release_lookback_hours,
-            trading_client=self.client,
-        )
-
-        # HMM regime detector (market-level gate)
-        self.regime_detector = RegimeDetector(
-            symbol=self.config.regime_symbol,
-            n_states=self.config.regime_hmm_states,
-            history_days=self.config.regime_history_days,
-        )
-
-        # Strategies
-        self.strategy = MomentumPullbackStrategy(
-            atr_period=self.config.atr_period,
-            atr_stop_multiplier=self.config.stock_atr_stop_multiplier,
-            pullback_min_candles=self.config.pullback_min_candles,
-            pullback_max_candles=self.config.pullback_max_candles,
-            pullback_max_retracement=self.config.pullback_max_retracement,
-            risk_reward_target=self.config.risk_reward_target,
-            min_signal_strength=self.config.min_signal_strength,
-        )
-        self.surge_strategy = MomentumSurgeStrategy(
-            atr_period=self.config.atr_period,
-            risk_reward_target=self.config.risk_reward_target,
-            min_signal_strength=self.config.min_signal_strength,
-        )
+        # ORB strategy
+        self.strategy = OpeningRangeBreakout(target_r=self.config.risk_reward_target)
 
         # State
         self.bot_state = BotState(self.config.bot_state_file)
@@ -142,7 +121,6 @@ class TradingBot:
             config=self.config,
             position_sizer=self.position_sizer,
             portfolio_limits=self.portfolio_limits,
-            regime_detector=self.regime_detector,
         )
         self.executor = TradeExecutor(
             order_executor=self.order_executor,
@@ -151,23 +129,16 @@ class TradingBot:
         self.monitor = PositionMonitor(
             client=self.client,
             position_manager=self.position_manager,
-            strategies={
-                "momentum_pullback": self.strategy,
-                "momentum_surge": self.surge_strategy,
-            },
+            strategies={"orb": self.strategy},
             trade_executor=self.executor,
         )
 
-        # WebSocket client (DXLink via tastytrade SDK)
-        self.ws_client = TastytradeWSClient(
-            tastytrade_client=self.client,
-            reconnect_max_seconds=self.config.ws_reconnect_max_seconds,
-            heartbeat_seconds=self.config.ws_heartbeat_seconds,
-        )
+        # Stream client (Schwab WebSocket)
+        self.ws_client = SchwabStreamClient(schwab_client=self.client)
 
         # Stream handler (event-driven signal engine)
         self.stream_handler = StreamHandler(
-            strategy=self.surge_strategy,
+            strategy=self.strategy,
             processor=self.processor,
             executor=self.executor,
             monitor=self.monitor,
@@ -177,10 +148,7 @@ class TradingBot:
             client=self.client,
             ws_client=self.ws_client,
             config=self.config,
-            strategies={
-                "momentum_pullback": self.strategy,
-                "momentum_surge": self.surge_strategy,
-            },
+            strategies={"orb": self.strategy},
         )
 
         # Register WebSocket callbacks
@@ -192,7 +160,6 @@ class TradingBot:
         self.scheduler = BotScheduler(self.config)
         self.scheduler.set_callbacks(
             momentum_scan=self._run_momentum_scan,
-            press_release_scan=self._run_press_release_scan,
             end_of_day=self._end_of_day_cleanup,
             daily_reset=self._daily_reset,
         )
@@ -228,14 +195,6 @@ class TradingBot:
         )
         logger.info(f"  Screener: TradingView")
 
-        # 0. Train regime detector (always, for dashboard display)
-        self.regime_detector.refresh()
-        status = self.regime_detector.get_status()
-        if status.get("trained"):
-            logger.info(f"  Regime: {status['label']} ({status['category']}, {status['confidence']:.0%})")
-        else:
-            logger.warning(f"  Regime: failed to train — {status.get('error', 'unknown')}")
-
         # 1. Initial sync with broker (REST, one-time)
         await self._sync_with_broker()
 
@@ -247,13 +206,13 @@ class TradingBot:
         # 2. Initial scan (REST) to get watchlist
         await self._run_momentum_scan()
 
-        # 3. Connect DXLink streams
-        logger.info("[DXLink] Connecting to tastytrade streams...")
+        # 3. Connect Schwab streams
+        logger.info("[WS] Connecting to Schwab streams...")
         data_ok = await self.ws_client.connect_data()
         trade_ok = await self.ws_client.connect_trades()
 
         logger.info(
-            f"[DXLink] Connections: data={'OK' if data_ok else 'FAILED'}, "
+            f"[WS] Connections: data={'OK' if data_ok else 'FAILED'}, "
             f"trade={'OK' if trade_ok else 'FAILED'}"
         )
 
@@ -270,9 +229,9 @@ class TradingBot:
             # Backfill 5-min bar history for stream handler
             for symbol in all_symbols:
                 await self.stream_handler._backfill_bars(symbol)
-            logger.info(f"[DXLink] Subscribed to {len(all_symbols)} symbols: {all_symbols}")
+            logger.info(f"[WS] Subscribed to {len(all_symbols)} symbols: {all_symbols}")
 
-        # 5. Start scheduler (time-specific events only: PR scan, EOD, daily reset)
+        # 5. Start scheduler (time-specific events only: EOD, daily reset)
         # NOTE: Momentum scan uses its own asyncio loop (more reliable than APScheduler cron)
         self.scheduler.start()
         self._running = True
@@ -474,42 +433,6 @@ class TradingBot:
         """Request bot shutdown (called from signal handler)."""
         asyncio.create_task(self.stop())
 
-    # -- Pre-Market: Press Release Scanning --------------------------------
-
-    async def _run_press_release_scan(self) -> None:
-        """
-        Scan RSS feeds + FMP for overnight press releases with catalysts.
-
-        Runs every 5 min from 4:00-7:00 AM ET (before momentum scanner).
-        Builds a catalyst watchlist that gets merged with scanner results.
-        """
-        if not self._running:
-            return
-
-        if not self.config.enable_press_release_scanner:
-            return
-
-        try:
-            new_hits = self.press_release_scanner.scan()
-
-            if new_hits:
-                status = self.press_release_scanner.get_status()
-                logger.info(
-                    f"[PR-SCAN] Status: {status['total_hits']} total hits, "
-                    f"{status['positive_hits']} positive, "
-                    f"{len(status['positive_symbols'])} unique symbols"
-                )
-
-                # Log positive catalyst symbols for the upcoming trading session
-                positive_symbols = status["positive_symbols"]
-                if positive_symbols:
-                    logger.info(
-                        f"[PR-SCAN] Catalyst watchlist: {positive_symbols}"
-                    )
-
-        except Exception as e:
-            logger.error(f"[PR-SCAN] Press release scan error: {e}")
-
     # -- Core: Momentum Scan + Signal Generation --------------------------
 
     async def _run_momentum_scan(self) -> None:
@@ -580,23 +503,6 @@ class TradingBot:
             candidates = []
 
         self._scanner_results = candidates
-
-        # Enrich candidates with press release catalyst data
-        if self.config.enable_press_release_scanner:
-            for candidate in candidates:
-                pr_hits = self.press_release_scanner.get_hits_for_symbol(candidate.symbol)
-                if pr_hits:
-                    # Use press release data to enrich the candidate
-                    best_hit = pr_hits[0]  # Most recent
-                    if not candidate.has_catalyst:
-                        candidate.has_catalyst = True
-                        candidate.news_headline = best_hit.headline
-                        candidate.news_url = best_hit.url
-                        candidate.news_source = f"{best_hit.source} (PR)"
-                        candidate.news_count = len(pr_hits)
-                    else:
-                        # Already has news — add PR count
-                        candidate.news_count += len(pr_hits)
 
         if not candidates:
             logger.info("[SCAN] No candidates found")
@@ -685,8 +591,7 @@ class TradingBot:
 
             current_price = self.client.get_latest_price(symbol)
 
-            # Surge strategy only (pullback disabled — negative intraday expectancy)
-            return self.surge_strategy.generate(
+            return self.strategy.generate(
                 symbol, bars, current_price, has_catalyst=has_catalyst,
                 symbol_trade_count=self._symbol_trade_counts.get(symbol, 0),
             )
@@ -825,14 +730,11 @@ class TradingBot:
         # Reset stream handler daily counters
         self.stream_handler.reset_daily()
 
-        # Reset press release scanner
-        self.press_release_scanner.reset_daily()
+        # Reset ORB strategy state for the new day
+        self.strategy.reset()
 
         # Reset portfolio limits daily counters
         self.portfolio_limits.reset_daily_limits()
-
-        # Refresh regime detector with latest daily bars (always, for dashboard)
-        self.regime_detector.refresh()
 
         # Sync fresh state from broker
         await self._sync_with_broker()
@@ -1016,7 +918,6 @@ class TradingBot:
             },
             "websocket": self.ws_client.get_status(),
             "stream": self.stream_handler.get_status(),
-            "press_releases": self.press_release_scanner.get_status(),
             "scanner_results": [
                 {
                     "symbol": c.symbol,
@@ -1029,7 +930,6 @@ class TradingBot:
                 for c in self._scanner_results[:10]
             ],
             "positions": self.monitor.get_positions_summary(),
-            "regime": self.regime_detector.get_status(),
             "state": self.bot_state.get_state_summary(),
             "jobs": self.scheduler.get_jobs(),
         }
