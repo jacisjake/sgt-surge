@@ -27,9 +27,9 @@ if TYPE_CHECKING:
     from src.bot.processor import SignalProcessor
     from src.bot.signals.base import SignalGenerator
     from src.bot.state.persistence import BotState
-    from src.core.tastytrade_client import TastytradeClient
+    from src.core.schwab_client import SchwabClient
     from src.core.position_manager import PositionManager
-    from src.core.tastytrade_ws import TastytradeWSClient
+    from src.core.schwab_stream import SchwabStreamClient
     from src.risk.portfolio_limits import PortfolioLimits
 
 
@@ -52,8 +52,8 @@ class StreamHandler:
         position_manager: "PositionManager",
         portfolio_limits: "PortfolioLimits",
         bot_state: "BotState",
-        client: "TastytradeClient",
-        ws_client: "TastytradeWSClient",
+        client: "SchwabClient",
+        ws_client: "SchwabStreamClient",
         config,
         strategies: Optional[dict] = None,
     ):
@@ -119,7 +119,7 @@ class StreamHandler:
 
         DXLink sends 5-min candles directly — no aggregation needed.
 
-        Bar format (normalized by TastytradeWSClient):
+        Bar format (normalized by SchwabStreamClient):
         {"T": "b", "S": "AAPL", "o": 150.25, "h": 150.75, "l": 150.10,
          "c": 150.50, "v": 125000, "t": "2026-02-10T14:35:00+00:00", "n": 0, "vw": 150.40}
         """
@@ -229,13 +229,8 @@ class StreamHandler:
             if gen_signal is None:
                 return
 
-            # Inject catalyst metadata
-            catalyst = self._catalysts.get(symbol, {})
-            gen_signal.metadata["has_catalyst"] = bool(catalyst)
-            gen_signal.metadata["news_headline"] = catalyst.get("headline", "")
-            gen_signal.metadata["news_count"] = catalyst.get("count", 0)
-            gen_signal.metadata["news_source"] = catalyst.get("source", "")
-            gen_signal.metadata["source"] = "stream"  # Mark as stream-generated
+            # Mark as stream-generated
+            gen_signal.metadata["source"] = "stream"
 
             logger.info(
                 f"[STREAM SIGNAL] {symbol}: {gen_signal.direction.value} "
