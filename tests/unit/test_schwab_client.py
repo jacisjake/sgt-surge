@@ -197,3 +197,48 @@ def test_cancel_order(schwab, mock_schwab_py_client):
     mock_schwab_py_client.cancel_order.return_value = MagicMock(status_code=200)
     assert schwab.cancel_order("9876") is True
     mock_schwab_py_client.cancel_order.assert_called_once_with("9876", "HASH-AAA")
+
+
+def test_get_orders_normalizes(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.get_orders_for_account.return_value = MagicMock(
+        status_code=200,
+        json=lambda: [
+            {
+                "orderId": 1234,
+                "status": "FILLED",
+                "filledQuantity": 5,
+                "orderLegCollection": [{"instrument": {"symbol": "AAPL"}, "quantity": 5}],
+                "orderType": "MARKET",
+                "price": None,
+                "stopPrice": None,
+                "enteredTime": "2026-05-08T13:30:00+0000",
+            },
+            {
+                "orderId": 1235,
+                "status": "WORKING",
+                "filledQuantity": 0,
+                "orderLegCollection": [{"instrument": {"symbol": "AAPL"}, "quantity": 5}],
+                "orderType": "STOP_LIMIT",
+                "price": 9.9,
+                "stopPrice": 9.95,
+                "enteredTime": "2026-05-08T13:31:00+0000",
+            },
+        ],
+    )
+
+    orders = schwab.get_orders(status="open")
+    assert len(orders) == 1
+    assert orders[0]["id"] == "1235"
+    assert orders[0]["type"] == "stop_limit"
+    assert orders[0]["stop_price"] == 9.95
+
+
+def test_get_orders_status_all(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.get_orders_for_account.return_value = MagicMock(
+        status_code=200,
+        json=lambda: [{"orderId": 1, "status": "FILLED", "filledQuantity": 5,
+                       "orderLegCollection": [{"instrument": {"symbol": "X"}, "quantity": 5}],
+                       "orderType": "MARKET", "price": None, "stopPrice": None,
+                       "enteredTime": "2026-05-08T13:30:00+0000"}],
+    )
+    assert len(schwab.get_orders(status="all")) == 1

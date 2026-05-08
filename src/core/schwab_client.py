@@ -281,3 +281,35 @@ class SchwabClient:
             if self.cancel_order(order["id"]):
                 cancelled += 1
         return cancelled
+
+    _OPEN_STATUSES = {"WORKING", "PENDING_ACTIVATION", "QUEUED", "AWAITING_PARENT_ORDER"}
+
+    def get_orders(self, status: str = "open") -> list[dict]:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        resp = self._client.get_orders_for_account(self._account_hash)
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"get_orders_for_account failed: {resp.status_code}")
+        out = []
+        for o in resp.json():
+            if status == "open" and o.get("status") not in self._OPEN_STATUSES:
+                continue
+            leg = (o.get("orderLegCollection") or [{}])[0]
+            out.append({
+                "id": str(o.get("orderId")),
+                "symbol": leg.get("instrument", {}).get("symbol", ""),
+                "qty": float(leg.get("quantity", 0)),
+                "filled_qty": float(o.get("filledQuantity", 0)),
+                "type": str(o.get("orderType", "")).lower(),
+                "status": str(o.get("status", "")).lower(),
+                "price": float(o["price"]) if o.get("price") is not None else None,
+                "stop_price": float(o["stopPrice"]) if o.get("stopPrice") is not None else None,
+                "submitted_at": o.get("enteredTime"),
+            })
+        return out
+
+    def get_order(self, order_id: str) -> Optional[dict]:
+        for o in self.get_orders(status="all"):
+            if o["id"] == order_id:
+                return o
+        return None
