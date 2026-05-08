@@ -125,7 +125,7 @@ class MomentumScreener:
 
         Args:
             float_provider: FloatDataProvider instance for float data
-            client: TastytradeClient instance for bar data and news
+            client: SchwabClient instance for bar data
             news_enabled: Whether to check for news catalysts
             news_lookback_hours: How far back to look for news
             news_max_articles: Max articles to fetch per symbol

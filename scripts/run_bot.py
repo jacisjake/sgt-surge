@@ -24,7 +24,7 @@ from src.bot.main import TradingBot
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Sgt Surge - Momentum Day Trading Bot",
+        description="Sgt Schwab - ORB Momentum Day Trading Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -33,12 +33,13 @@ Examples:
     python scripts/run_bot.py --status           # Show account status
 
 Environment variables (or in .env):
-    TT_CLIENT_ID         - tastytrade OAuth client ID
-    TT_CLIENT_SECRET     - tastytrade OAuth client secret
-    TT_REFRESH_TOKEN     - tastytrade OAuth refresh token
-    TT_ACCOUNT_NUMBER    - tastytrade account number
-    TRADING_MODE         - paper or live (default: paper)
-    FMP_API_KEY          - Financial Modeling Prep API key (optional)
+    SCHWAB_APP_KEY          - Schwab developer app key
+    SCHWAB_APP_SECRET       - Schwab developer app secret
+    SCHWAB_OAUTH_REDIRECT_URI - OAuth callback URL
+    SCHWAB_TOKEN_PATH       - Path to persisted OAuth token JSON
+    SCHWAB_ACCOUNT_HASH     - Pinned account hash (optional)
+    TRADING_MODE            - dry_run or live (default: dry_run)
+    FMP_API_KEY             - Financial Modeling Prep API key (optional)
 
 See .env.example for all available settings.
         """,
@@ -54,12 +55,6 @@ See .env.example for all available settings.
         "--status",
         action="store_true",
         help="Show current account and position status",
-    )
-
-    parser.add_argument(
-        "--check-signals",
-        action="store_true",
-        help="Check for signals once and exit",
     )
 
     return parser.parse_args()
@@ -106,10 +101,17 @@ def show_config():
 
 async def show_status():
     """Display current account and position status."""
-    from src.core.tastytrade_client import TastytradeClient
+    from src.core.schwab_client import SchwabClient
     from src.core.position_manager import PositionManager
 
-    client = TastytradeClient()
+    cfg = get_bot_config()
+    client = SchwabClient(
+        app_key=cfg.schwab_app_key,
+        app_secret=cfg.schwab_app_secret,
+        callback_url=cfg.schwab_oauth_redirect_uri,
+        token_path=cfg.schwab_token_path,
+        pinned_account_hash=cfg.schwab_account_hash,
+    )
     position_manager = PositionManager()
 
     print("=" * 60)
@@ -162,49 +164,6 @@ async def show_status():
     print("=" * 60)
 
 
-async def check_signals_once():
-    """Check for signals once and display results."""
-    from src.bot.config import get_bot_config
-    from src.bot.signals.momentum_surge import MomentumSurgeStrategy
-    from src.core.tastytrade_client import TastytradeClient
-
-    config = get_bot_config()
-    client = TastytradeClient()
-    strategy = MomentumSurgeStrategy()
-
-    print("=" * 60)
-    print("SIGNAL CHECK")
-    print("=" * 60)
-    print()
-
-    symbols = config.stock_symbols
-    if not symbols:
-        print("  No symbols in watchlist (scanner-driven mode).")
-        print("  Add symbols to STOCK_WATCHLIST in .env to check manually.")
-        print()
-        print("=" * 60)
-        return
-
-    print("Checking stocks...")
-    for symbol in symbols:
-        try:
-            bars = client.get_bars(symbol, timeframe=config.stock_timeframe, limit=50)
-            if bars is not None and len(bars) >= 25:
-                price = client.get_latest_price(symbol)
-                signal = strategy.generate(symbol, bars, price)
-                if signal:
-                    print(f"  + {symbol}: {signal.direction.value.upper()} @ ${signal.entry_price:.2f}")
-                    print(f"      Stop: ${signal.stop_price:.2f}, Target: ${signal.target_price:.2f}")
-                    print(f"      Strength: {signal.strength:.2f}, R:R: {signal.risk_reward_ratio:.1f}")
-                else:
-                    print(f"  - {symbol}: No signal")
-        except Exception as e:
-            print(f"  ! {symbol}: Error - {e}")
-
-    print()
-    print("=" * 60)
-
-
 async def run_with_api():
     """Run bot with API server."""
     import uvicorn
@@ -245,10 +204,6 @@ def main():
 
     if args.status:
         asyncio.run(show_status())
-        return 0
-
-    if args.check_signals:
-        asyncio.run(check_signals_once())
         return 0
 
     # Run the bot with API
