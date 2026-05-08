@@ -21,7 +21,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 from src.bot.config import BotConfig
-from src.core.tastytrade_client import NYSE_HOLIDAYS
+from src.core.market_calendar import NYSE_HOLIDAYS
 
 ET = pytz.timezone("America/New_York")
 
