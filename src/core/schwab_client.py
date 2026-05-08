@@ -17,8 +17,23 @@ from loguru import logger
 
 try:
     from schwab.auth import easy_client
+    from schwab.orders.equities import (
+        equity_buy_market,
+        equity_sell_market,
+        equity_buy_limit,
+        equity_sell_limit,
+    )
+    from schwab.orders.generic import OrderBuilder as _OrderBuilder
+    from schwab.orders.common import (
+        Duration as _Duration,
+        Session as _Session,
+        OrderType as _OrderType,
+        EquityInstruction as _EquityInstruction,
+    )
 except ImportError:  # pragma: no cover — surfaced at install time
     easy_client = None
+    equity_buy_market = equity_sell_market = equity_buy_limit = equity_sell_limit = None
+    _OrderBuilder = _Duration = _Session = _OrderType = _EquityInstruction = None
 
 
 class SchwabClient:
@@ -187,3 +202,82 @@ class SchwabClient:
                 "change_pct": float(q.get("netPercentChangeInDouble", 0)),
             }
         return out
+
+    @staticmethod
+    def _extract_order_id_from_location(headers: dict) -> str:
+        location = headers.get("Location") or headers.get("location") or ""
+        return location.rsplit("/", 1)[-1]
+
+    def submit_market_order(self, symbol: str, qty: float, side: str) -> str:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        builder = (
+            equity_buy_market(symbol, int(qty))
+            if side.lower() == "buy"
+            else equity_sell_market(symbol, int(qty))
+        )
+        resp = self._client.place_order(self._account_hash, builder)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"place_order failed: {resp.status_code}")
+        return self._extract_order_id_from_location(resp.headers)
+
+    def submit_limit_order(
+        self, symbol: str, qty: float, side: str, limit_price: float
+    ) -> str:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        builder = (
+            equity_buy_limit(symbol, int(qty), limit_price)
+            if side.lower() == "buy"
+            else equity_sell_limit(symbol, int(qty), limit_price)
+        )
+        resp = self._client.place_order(self._account_hash, builder)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"place_order failed: {resp.status_code}")
+        return self._extract_order_id_from_location(resp.headers)
+
+    def submit_stop_limit_order(
+        self,
+        symbol: str,
+        qty: float,
+        side: str,
+        stop_price: float,
+        limit_price: float,
+    ) -> str:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+
+        instr = (
+            _EquityInstruction.BUY if side.lower() == "buy"
+            else _EquityInstruction.SELL
+        )
+        builder = (
+            _OrderBuilder()
+            .set_order_type(_OrderType.STOP_LIMIT)
+            .set_session(_Session.NORMAL)
+            .set_duration(_Duration.DAY)
+            .set_stop_price(stop_price)
+            .set_price(limit_price)
+            .add_equity_leg(
+                instruction=instr,
+                symbol=symbol,
+                quantity=int(qty),
+            )
+        )
+        resp = self._client.place_order(self._account_hash, builder)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"place_order failed: {resp.status_code}")
+        return self._extract_order_id_from_location(resp.headers)
+
+    def cancel_order(self, order_id: str) -> bool:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        resp = self._client.cancel_order(order_id, self._account_hash)
+        return resp.status_code in (200, 201)
+
+    def cancel_all_orders(self) -> int:
+        cancelled = 0
+        for order in self.get_orders(status="open"):
+            if self.cancel_order(order["id"]):
+                cancelled += 1
+        return cancelled

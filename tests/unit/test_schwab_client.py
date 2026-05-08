@@ -166,3 +166,34 @@ def test_get_latest_quotes_multi_symbol(schwab, mock_schwab_py_client):
     assert quotes["AAPL"]["price"] == 10.55
     assert quotes["AAPL"]["change_pct"] == 5.0
     assert quotes["MSFT"]["bid"] == 19.9
+
+
+def test_submit_market_order_calls_place_order_with_account_hash(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.place_order.return_value = MagicMock(
+        status_code=201,
+        headers={"Location": "https://api.schwabapi.com/.../orders/9876"},
+    )
+
+    order_id = schwab.submit_market_order("AAPL", qty=5, side="buy")
+    assert order_id == "9876"
+
+    args, kwargs = mock_schwab_py_client.place_order.call_args
+    assert args[0] == "HASH-AAA"
+
+
+def test_submit_stop_limit_order(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.place_order.return_value = MagicMock(
+        status_code=201,
+        headers={"Location": "https://api.schwabapi.com/.../orders/4321"},
+    )
+
+    order_id = schwab.submit_stop_limit_order(
+        "AAPL", qty=5, side="sell", stop_price=9.0, limit_price=8.95
+    )
+    assert order_id == "4321"
+
+
+def test_cancel_order(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.cancel_order.return_value = MagicMock(status_code=200)
+    assert schwab.cancel_order("9876") is True
+    mock_schwab_py_client.cancel_order.assert_called_once_with("9876", "HASH-AAA")
