@@ -88,3 +88,17 @@ def medium_account() -> dict:
         "buying_power": 10000.0,
         "risk_pct": 0.01,  # 1% risk per trade
     }
+
+
+from unittest.mock import MagicMock  # noqa: E402
+
+
+@pytest.fixture
+def mock_schwab_py_client():
+    """A MagicMock standing in for schwab.client.Client."""
+    client = MagicMock()
+    client.get_account_numbers.return_value = MagicMock(
+        status_code=200,
+        json=lambda: [{"accountNumber": "111", "hashValue": "HASH-AAA"}],
+    )
+    return client
