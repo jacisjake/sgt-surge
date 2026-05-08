@@ -100,8 +100,6 @@ def show_config():
     print(f"  Timeframe: {config.stock_timeframe}")
     print(f"  ATR Stop Multiplier: {config.stock_atr_stop_multiplier}x")
     print(f"  Risk/Reward Target: {config.risk_reward_target}R")
-    print(f"  Min Signal Strength: {config.min_signal_strength}")
-    print(f"  Regime Gate: {'ON' if config.enable_regime_gate else 'OFF'}")
     print()
     print("=" * 60)
 
