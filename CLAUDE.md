@@ -18,23 +18,22 @@ sudo systemctl reload caddy
 
 ## Key Directories on Server
 
-- `/opt/sgt-surge/` - Application files
-- `/opt/sgt-surge/.env` - Environment variables (Alpaca keys)
+- `/opt/sgt-schwab/` - Application files
+- `/opt/sgt-schwab/.env` - Environment variables (Schwab API keys)
 - Container volumes for state/logs
 
 ## Trading Context
 
-- **Broker**: tastytrade (live trading enabled)
-- **Starting capital**: $250
+- **Broker**: Charles Schwab API (port from tastytrade in progress — current code on disk is still tastytrade)
+- **Starting capital**: ~$270
 - **Goal**: $25,000
-- **Strategy**: Ross Cameron-style momentum surge on low-float stocks
-- **Timeframe**: 5-min bars
-- **Target stocks**: $1-$10 price (prefer $2+), min 500K float, 10%+ daily change, 5x+ relative volume
-- **Schedule**: Scanning 6:00 AM - 4:00 PM ET, safety net close at 3:55 PM ET
-- **No trading window**: Entries allowed anytime during scanning hours
-- **Max trades/day**: 10
-- **Position sizing**: Up to 90% of buying power, risk-constrained (2% max risk)
-- **Scanner**: TradingView screener, enriched with relative volume + float data
-- **Float data**: Financial Modeling Prep (FMP) free API
-- **Entry**: Momentum surge, price > VWAP
-- **Exit**: VWAP breakdown (2 consecutive closes below), progressive R-trailing stop, or safety net (3:55 PM)
+- **Strategy**: Opening Range Breakout (ORB)
+  - Timeframe: 5-min bars (Schwab streams 1-min, aggregated internally)
+  - Symbol universe: pre-market gappers, top 5 via TradingView (configurable)
+  - Opening-range window: 9:30–9:45 ET
+  - Entry rule: long-only; single 5-min close above OR high with volume filter
+  - Stop: OR low. Target: entry + 2R, with progressive R-trailing (breakeven floor at +1R, chandelier overlay above)
+  - Max trades/day: cash-account-constrained (no fixed cap)
+  - Position sizing: hybrid (~90% BP deploy, capped by risk %)
+- **Trading mode**: `TRADING_MODE=dry_run` (simulated fills) is the default. Set `live` to send real orders.
+- **Migration design**: see `docs/superpowers/specs/2026-05-08-schwab-migration-design.md`
