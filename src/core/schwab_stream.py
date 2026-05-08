@@ -6,9 +6,17 @@ adds the BarAggregator that rolls 1-min OHLCV bars into N-min bars.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from typing import Callable, List, Optional
+
+from loguru import logger
+
+try:
+    from schwab.streaming import StreamClient
+except ImportError:  # pragma: no cover
+    StreamClient = None
 
 
 @dataclass
@@ -66,3 +74,180 @@ class BarAggregator:
         win.low = min(win.low, bar["low"])
         win.close = bar["close"]
         win.volume += bar["volume"]
+
+
+class SchwabStreamClient:
+    def __init__(self, *, schwab_client):
+        self._schwab = schwab_client
+        self._stream: Optional["StreamClient"] = None
+        self._bar_callbacks: List[Callable] = []
+        self._quote_callbacks: List[Callable] = []
+        self._trade_callbacks: List[Callable] = []
+        self._aggregator = BarAggregator(
+            window_minutes=5,
+            on_emit=self._dispatch_bar_to_callbacks,
+        )
+        self._subscribed = {"bars": set(), "quotes": set()}
+        self._data_connected = False
+        self._trade_connected = False
+
+    # -- Callback registration --------------------------------------------
+    def on_bar(self, cb: Callable) -> None:
+        self._bar_callbacks.append(cb)
+
+    def on_quote(self, cb: Callable) -> None:
+        self._quote_callbacks.append(cb)
+
+    def on_trade_update(self, cb: Callable) -> None:
+        self._trade_callbacks.append(cb)
+
+    # -- Connection -------------------------------------------------------
+    async def connect_data(self) -> bool:
+        try:
+            self._stream = StreamClient(self._schwab._client)
+            await self._stream.login()
+            self._stream.add_chart_equity_handler(self._handle_chart_equity)
+            self._stream.add_level_one_equity_handler(self._handle_quote)
+            self._data_connected = True
+            return True
+        except Exception as e:
+            logger.error(f"[STREAM] connect_data failed: {e}")
+            return False
+
+    async def connect_trades(self) -> bool:
+        try:
+            if self._stream is None:
+                self._stream = StreamClient(self._schwab._client)
+                await self._stream.login()
+            self._stream.add_account_activity_handler(self._handle_trade_update)
+            await self._stream.account_activity_sub()
+            self._trade_connected = True
+            return True
+        except Exception as e:
+            logger.error(f"[STREAM] connect_trades failed: {e}")
+            return False
+
+    # -- Subscriptions ----------------------------------------------------
+    async def subscribe(self, *, bars: List[str] = (), quotes: List[str] = ()) -> None:
+        if bars:
+            await self._stream.chart_equity_subs(list(bars))
+            self._subscribed["bars"].update(bars)
+        if quotes:
+            await self._stream.level_one_equity_subs(list(quotes))
+            self._subscribed["quotes"].update(quotes)
+
+    async def unsubscribe(self, *, bars: List[str] = (), quotes: List[str] = ()) -> None:
+        if bars:
+            await self._stream.chart_equity_unsubs(list(bars))
+            self._subscribed["bars"].difference_update(bars)
+        if quotes:
+            await self._stream.level_one_equity_unsubs(list(quotes))
+            self._subscribed["quotes"].difference_update(quotes)
+
+    async def update_subscriptions(self, *, bars: List[str], quotes: List[str]) -> None:
+        cur_bars = self._subscribed["bars"]
+        cur_quotes = self._subscribed["quotes"]
+        new_bars = set(bars) - cur_bars
+        drop_bars = cur_bars - set(bars)
+        new_quotes = set(quotes) - cur_quotes
+        drop_quotes = cur_quotes - set(quotes)
+        if new_bars or new_quotes:
+            await self.subscribe(bars=list(new_bars), quotes=list(new_quotes))
+        if drop_bars or drop_quotes:
+            await self.unsubscribe(bars=list(drop_bars), quotes=list(drop_quotes))
+
+    # -- Status -----------------------------------------------------------
+    @property
+    def data_connected(self) -> bool:
+        return self._data_connected
+
+    @property
+    def trade_connected(self) -> bool:
+        return self._trade_connected
+
+    @property
+    def subscribed_symbols(self) -> dict:
+        return {k: set(v) for k, v in self._subscribed.items()}
+
+    def get_status(self) -> dict:
+        return {
+            "data_connected": self._data_connected,
+            "trade_connected": self._trade_connected,
+            "subscribed_bars": sorted(self._subscribed["bars"]),
+            "subscribed_quotes": sorted(self._subscribed["quotes"]),
+        }
+
+    # -- Loops ------------------------------------------------------------
+    async def run_data_loop(self) -> None:
+        if self._stream is None:
+            raise RuntimeError("connect_data() must be called first")
+        while True:
+            await self._stream.handle_message()
+
+    async def run_trade_loop(self) -> None:
+        if self._stream is None:
+            raise RuntimeError("connect_trades() must be called first")
+        while True:
+            await self._stream.handle_message()
+
+    async def disconnect(self) -> None:
+        if self._stream is not None:
+            try:
+                await self._stream.logout()
+            except Exception:
+                pass
+        self._stream = None
+        self._data_connected = False
+        self._trade_connected = False
+
+    # -- Internal handlers (Schwab → our callback shape) -----------------
+    def _handle_chart_equity(self, msg: dict) -> None:
+        for content in msg.get("content", []):
+            self._aggregator.feed({
+                "symbol": content["key"],
+                "timestamp": _ms_to_iso(content.get("CHART_TIME") or content.get("3")),
+                "open": float(content.get("OPEN_PRICE") or content.get("4")),
+                "high": float(content.get("HIGH_PRICE") or content.get("5")),
+                "low": float(content.get("LOW_PRICE") or content.get("6")),
+                "close": float(content.get("CLOSE_PRICE") or content.get("7")),
+                "volume": int(content.get("VOLUME") or content.get("8")),
+            })
+
+    def _dispatch_bar_to_callbacks(self, bar: dict) -> None:
+        for cb in self._bar_callbacks:
+            try:
+                cb(bar)
+            except Exception as e:
+                logger.error(f"[STREAM] bar callback raised: {e}")
+
+    def _handle_quote(self, msg: dict) -> None:
+        for content in msg.get("content", []):
+            quote = {
+                "symbol": content["key"],
+                "bid": float(content.get("BID_PRICE") or content.get("1") or 0),
+                "ask": float(content.get("ASK_PRICE") or content.get("2") or 0),
+                "last": float(content.get("LAST_PRICE") or content.get("3") or 0),
+                "timestamp": _now_iso(),
+            }
+            for cb in self._quote_callbacks:
+                try:
+                    cb(quote)
+                except Exception as e:
+                    logger.error(f"[STREAM] quote callback raised: {e}")
+
+    def _handle_trade_update(self, msg: dict) -> None:
+        for cb in self._trade_callbacks:
+            try:
+                cb(msg)
+            except Exception as e:
+                logger.error(f"[STREAM] trade callback raised: {e}")
+
+
+def _ms_to_iso(ms) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).isoformat()
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(tz=timezone.utc).isoformat()
