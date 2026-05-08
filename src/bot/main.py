@@ -162,6 +162,7 @@ class TradingBot:
             momentum_scan=self._run_momentum_scan,
             end_of_day=self._end_of_day_cleanup,
             daily_reset=self._daily_reset,
+            or_lock=self._lock_opening_ranges,
         )
 
         # Day trading state
@@ -740,6 +741,33 @@ class TradingBot:
         await self._sync_with_broker()
 
         logger.info("[RESET] Daily reset complete. Ready for pre-market scanning.")
+
+    # -- Opening Range Lock -----------------------------------------------
+
+    async def _lock_opening_ranges(self) -> None:
+        """At 9:45:30 ET, fetch the 9:30-9:45 window for each watchlist symbol."""
+        if not self._running:
+            return
+        symbols = [c.symbol for c in self._scanner_results]
+        symbols = list({s for s in symbols if s})
+        if not symbols:
+            logger.info("[OR-LOCK] No symbols on watchlist; skipping.")
+            return
+
+        for symbol in symbols:
+            try:
+                bars = self.client.get_bars(symbol, timeframe="5Min", limit=3)
+                if bars is None or bars.empty:
+                    logger.warning(f"[OR-LOCK] {symbol}: no bars returned")
+                    continue
+                self.strategy.lock_or(symbol, bars)
+                st = self.strategy.state[symbol]
+                logger.info(
+                    f"[OR-LOCK] {symbol}: H=${st.or_high:.2f} L=${st.or_low:.2f} "
+                    f"V={st.or_volume:,}"
+                )
+            except Exception as e:
+                logger.error(f"[OR-LOCK] {symbol} failed: {e}")
 
     # -- Broker Sync ------------------------------------------------------
 
