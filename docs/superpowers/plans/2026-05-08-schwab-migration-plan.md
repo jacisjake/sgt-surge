@@ -19,12 +19,15 @@
 - `src/core/schwab_stream.py` — async streamer wrapper with 1-min→5-min bar aggregator
 - `src/core/market_calendar.py` — `NYSE_HOLIDAYS` and session helpers (extracted from `tastytrade_client.py`)
 - `src/bot/signals/orb.py` — Opening Range Breakout strategy
+- `src/bot/web.py` — FastAPI dashboard with Schwab OAuth + ORB endpoints (built from scratch — prior surge dashboard was discarded with the rest of the surge work)
 - `tests/unit/test_schwab_client.py`
 - `tests/unit/test_schwab_stream.py`
 - `tests/unit/test_bar_aggregator.py`
 - `tests/unit/test_orb_strategy.py`
 - `tests/unit/test_dry_run_executor.py`
 - `tests/unit/test_market_calendar.py`
+- `tests/unit/test_oauth_routes.py`
+- `tests/unit/test_dashboard_endpoints.py`
 - `scripts/smoke_schwab.py`
 
 ### Files modified
@@ -39,10 +42,9 @@
 - `src/bot/stream_handler.py` — swap imports
 - `src/bot/scheduler.py` — import `NYSE_HOLIDAYS` from `market_calendar`; add `or_lock` job at 9:45:30 ET
 - `src/core/order_executor.py` — rewrite internals against SchwabClient + dry-run intercept
-- `src/bot/web.py` — replace `/oauth/*` with `/schwab/oauth/*`; update auth-status payload; trim DASHBOARD_HTML
-- `scripts/run_bot.py` — drop `--check-signals` (surge-specific); update `show_status` import
+- `scripts/run_bot.py` — drop `--check-signals` (surge-specific); update `show_status` import; remove `run_with_api` references to old web module if any
 - `deploy/deploy-remote.sh` — paths + container names
-- `tests/conftest.py` — fixtures for `mock_schwab_client`
+- `tests/conftest.py` — fixtures for `mock_schwab_py_client`
 
 ### Files deleted
 - `src/core/tastytrade_client.py`
@@ -2580,11 +2582,13 @@ git commit -m "Schedule 9:45:30 ET OR-lock job; wire into ORB strategy"
 
 ## Phase 6 — Web / OAuth / Dashboard
 
-### Task 19: New `/schwab/oauth/*` routes
+### Task 19: Create `src/bot/web.py` skeleton with Schwab OAuth routes
 
 **Files:**
-- Modify: `src/bot/web.py`
+- Create: `src/bot/web.py`
 - Create: `tests/unit/test_oauth_routes.py`
+
+The previous (surge-era) `web.py` was discarded along with the rest of the surge working tree. This task scaffolds a fresh `web.py` containing only the FastAPI app, the bot wiring (`set_bot`), and the three OAuth routes Schwab needs. Task 20 expands it with the dashboard HTML and `/api/*` endpoints.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2637,8 +2641,15 @@ def test_oauth_callback_persists_token_and_reloads_client(client_with_bot):
 
 def test_legacy_oauth_callback_returns_410(client_with_bot):
     client, _ = client_with_bot
-    resp = client.get("/oauth/callback", params={"code": "x"})
+    resp = client.get("/oauth/callback")
     assert resp.status_code == 410
+
+
+def test_root_returns_html(client_with_bot):
+    client, _ = client_with_bot
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
 ```
 
 - [ ] **Step 2: Run**
@@ -2646,39 +2657,59 @@ def test_legacy_oauth_callback_returns_410(client_with_bot):
 ```bash
 pytest tests/unit/test_oauth_routes.py -v
 ```
-Expected: failures (routes don't exist yet, or shape is wrong).
+Expected: ImportError on `from src.bot import web`.
 
-- [ ] **Step 3: Edit `src/bot/web.py`**
-
-Remove the existing `/oauth/authorize` and `/oauth/callback` routes. Replace with:
+- [ ] **Step 3: Create `src/bot/web.py` from scratch**
 
 ```python
+"""
+Bot dashboard + OAuth callback server.
+
+FastAPI app. Schwab OAuth flow at /schwab/oauth/{start,callback}.
+Dashboard HTML and /api/* endpoints are added in Task 20.
+"""
+
+from __future__ import annotations
+
 from urllib.parse import urlencode
 
-from fastapi import HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 try:
     from schwab.auth import client_from_received_url
-except ImportError:
+except ImportError:  # pragma: no cover
     client_from_received_url = None
 
 
-@app.get("/oauth/authorize")
-@app.get("/oauth/callback")
-async def _legacy_oauth_410():
-    raise HTTPException(
-        status_code=410,
-        detail=(
-            "Legacy OAuth path. Use /schwab/oauth/start to begin the Schwab "
-            "authorize flow; the callback URL is /schwab/oauth/callback."
-        ),
-    )
+app = FastAPI(title="sgt-schwab", version="1.0.0")
+
+_bot = None
+
+
+def set_bot(bot) -> None:
+    """Called by run_bot.py at startup to give the API access to the bot."""
+    global _bot
+    _bot = bot
+
+
+_HTML_STUB = """\
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>sgt-schwab</title></head>
+<body><h1>sgt-schwab</h1><p>Dashboard rendering moves to Task 20.</p></body>
+</html>
+"""
+
+
+@app.get("/")
+async def dashboard():
+    return HTMLResponse(_HTML_STUB)
 
 
 @app.get("/schwab/oauth/start")
 async def schwab_oauth_start():
-    if not _bot:
+    if _bot is None:
         raise HTTPException(503, "Bot not initialized")
     params = {
         "client_id": _bot.config.schwab_app_key,
@@ -2691,7 +2722,7 @@ async def schwab_oauth_start():
 
 @app.get("/schwab/oauth/callback")
 async def schwab_oauth_callback(request: Request):
-    if not _bot:
+    if _bot is None:
         raise HTTPException(503, "Bot not initialized")
     full_url = str(request.url)
     try:
@@ -2705,6 +2736,18 @@ async def schwab_oauth_callback(request: Request):
         raise HTTPException(400, f"OAuth exchange failed: {e}")
     _bot.client.reload_from_disk()
     return RedirectResponse("/", status_code=302)
+
+
+@app.get("/oauth/authorize")
+@app.get("/oauth/callback")
+async def _legacy_oauth_410():
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy OAuth path. Use /schwab/oauth/start to begin the Schwab "
+            "authorize flow; the callback URL is /schwab/oauth/callback."
+        ),
+    )
 ```
 
 - [ ] **Step 4: Run**
@@ -2712,52 +2755,142 @@ async def schwab_oauth_callback(request: Request):
 ```bash
 pytest tests/unit/test_oauth_routes.py -v
 ```
-Expected: 3 passed.
+Expected: 4 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/bot/web.py tests/unit/test_oauth_routes.py
-git commit -m "Add /schwab/oauth/{start,callback} routes; legacy path returns 410"
+git commit -m "web.py: skeleton + /schwab/oauth/{start,callback} routes"
 ```
 
 ---
 
-### Task 20: Update `/api/auth/status` and dashboard HTML
+### Task 20: Add /api/* endpoints + ORB dashboard HTML
 
 **Files:**
 - Modify: `src/bot/web.py`
+- Create: `tests/unit/test_dashboard_endpoints.py`
 
-- [ ] **Step 1: Replace `/api/auth/status` body**
+- [ ] **Step 1: Write the failing tests**
 
+Create `tests/unit/test_dashboard_endpoints.py`:
+```python
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from src.bot import web
+from src.bot.signals.orb import _ORState
+
+
+@pytest.fixture
+def bot_app():
+    bot = MagicMock()
+    bot.client.is_authenticated = True
+    bot.client.account_hash = "HASH-AAA"
+    bot.client.get_account.return_value = {
+        "equity": 270.0, "buying_power": 250.0, "cash": 250.0,
+        "daytrade_count": 0, "is_pdt": False, "type": "CASH", "status": "active",
+    }
+    bot.config.schwab_app_key = "K"
+    bot.config.trading_mode.value = "dry_run"
+    bot.strategy.state = {
+        "AAPL": _ORState(or_high=10.5, or_low=9.8, or_volume=6000,
+                         or_locked=True, breakout_fired=False),
+    }
+    bot.position_manager.get_open_positions.return_value = []
+    bot._scanner_results = []
+    web.set_bot(bot)
+    yield TestClient(web.app), bot
+
+
+def test_auth_status(bot_app):
+    client, _ = bot_app
+    r = client.get("/api/auth/status")
+    assert r.status_code == 200
+    assert r.json() == {
+        "authenticated": True, "account_hash": "HASH-AAA", "broker": "schwab",
+    }
+
+
+def test_orb_state(bot_app):
+    client, _ = bot_app
+    r = client.get("/api/orb")
+    assert r.status_code == 200
+    payload = r.json()
+    assert "AAPL" in payload
+    assert payload["AAPL"]["or_high"] == 10.5
+    assert payload["AAPL"]["or_locked"] is True
+
+
+def test_status_returns_account_when_authenticated(bot_app):
+    client, _ = bot_app
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["account"]["equity"] == 270.0
+    assert body["trading_mode"] == "dry_run"
+
+
+def test_status_returns_setup_mode_when_unauthenticated():
+    bot = MagicMock()
+    bot.client.is_authenticated = False
+    web.set_bot(bot)
+    r = TestClient(web.app).get("/api/status")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "setup"
+
+
+def test_dashboard_html_mentions_orb(bot_app):
+    client, _ = bot_app
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "ORB" in r.text or "Opening Range" in r.text
+```
+
+- [ ] **Step 2: Run**
+
+```bash
+pytest tests/unit/test_dashboard_endpoints.py -v
+```
+Expected: failures (endpoints don't exist; HTML stub doesn't mention ORB).
+
+- [ ] **Step 3: Append the API endpoints to `src/bot/web.py`**
+
+After the OAuth routes, add:
 ```python
 @app.get("/api/auth/status")
-async def get_auth_status() -> dict:
-    if not _bot:
-        return {"authenticated": False, "account_hash": None}
+async def auth_status() -> dict:
+    if _bot is None:
+        return {"authenticated": False, "account_hash": None, "broker": "schwab"}
     return {
         "authenticated": _bot.client.is_authenticated,
         "account_hash": _bot.client.account_hash,
         "broker": "schwab",
     }
-```
 
-- [ ] **Step 2: Trim `DASHBOARD_HTML`**
 
-`grep -n "tastytrade\|Tastytrade\|catalyst\|news\|regime\|press" src/bot/web.py` — for each hit inside `DASHBOARD_HTML`, remove or rename to ORB-shaped equivalents. Specifically:
-- "Tastytrade" → "Schwab" in chrome and page title
-- Remove the news/catalyst ribbons and their renderers
-- Remove the regime indicator panel
-- Replace the strategy panel: show per-symbol `or_high`, `or_low`, `or_locked`, `breakout_fired`, `last_price`, and a colored bar showing `last_price` vs `or_high`
+@app.get("/api/status")
+async def status() -> dict:
+    if _bot is None or not _bot.client.is_authenticated:
+        return {"mode": "setup", "authenticated": False}
+    try:
+        account = _bot.client.get_account()
+    except Exception as e:
+        return {"mode": "error", "error": str(e)}
+    return {
+        "mode": "running",
+        "authenticated": True,
+        "account": account,
+        "trading_mode": str(_bot.config.trading_mode.value),
+    }
 
-Use the existing `/api/scanner` and a new `/api/orb` (next step) to populate it.
 
-- [ ] **Step 3: Add `/api/orb` for dashboard polling**
-
-```python
 @app.get("/api/orb")
-async def get_orb_state() -> dict:
-    if not _bot:
+async def orb_state() -> dict:
+    if _bot is None:
         return {}
     return {
         sym: {
@@ -2769,24 +2902,176 @@ async def get_orb_state() -> dict:
         }
         for sym, st in _bot.strategy.state.items()
     }
+
+
+@app.get("/api/positions")
+async def positions() -> list[dict]:
+    if _bot is None:
+        return []
+    return [p.to_dict() for p in _bot.position_manager.get_open_positions()]
+
+
+@app.get("/api/scanner")
+async def scanner() -> list[dict]:
+    if _bot is None:
+        return []
+    return [
+        {"symbol": c.symbol, "price": c.price, "change_pct": c.change_pct}
+        for c in _bot._scanner_results[:20]
+    ]
 ```
 
-- [ ] **Step 4: Smoke test the running app**
+- [ ] **Step 4: Replace `_HTML_STUB` and the `dashboard()` function**
 
-```bash
-TRADING_MODE=dry_run python scripts/run_bot.py &
-sleep 3
-curl -s http://localhost:8080/api/auth/status | python -m json.tool
-curl -s http://localhost:8080/api/orb | python -m json.tool
-kill %1
+Delete the existing `_HTML_STUB` constant and the `dashboard()` function. Replace with:
+```python
+_DASHBOARD_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>sgt-schwab - ORB</title>
+  <style>
+    body { font-family: ui-monospace, monospace; background: #0e1117; color: #c9d1d9; margin: 0; padding: 24px; }
+    h1 { font-size: 18px; margin: 0 0 16px; }
+    .panel { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; font-size: 13px; }
+    th { color: #8b949e; font-weight: normal; }
+    .ok { color: #3fb950; }
+    .warn { color: #d29922; }
+    .err { color: #f85149; }
+    button { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+  </style>
+</head>
+<body>
+  <h1>sgt-schwab - ORB (Opening Range Breakout)</h1>
+
+  <div class="panel">
+    <strong>Auth:</strong> <span id="auth"></span>
+    <span style="margin-left: 16px;"><strong>Mode:</strong> <span id="mode"></span></span>
+    <button id="oauth-btn" style="margin-left: 16px; display:none">Authorize Schwab</button>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Account</h2>
+    <div id="account"></div>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">ORB state</h2>
+    <table id="orb-table"><thead><tr>
+      <th>Symbol</th><th>OR High</th><th>OR Low</th><th>OR Vol</th><th>Locked</th><th>Fired</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Positions</h2>
+    <table id="pos-table"><thead><tr>
+      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+<script>
+function setText(id, value, cls) {
+  const el = document.getElementById(id);
+  el.textContent = value;
+  if (cls !== undefined) el.className = cls;
+}
+
+function makeCell(text, cls) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  if (cls) td.className = cls;
+  return td;
+}
+
+function renderTable(tbodySelector, rows) {
+  const tbody = document.querySelector(tbodySelector);
+  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+  for (const cells of rows) {
+    const tr = document.createElement('tr');
+    for (const c of cells) tr.appendChild(makeCell(c.text, c.cls));
+    tbody.appendChild(tr);
+  }
+}
+
+async function refresh() {
+  const auth = await (await fetch('/api/auth/status')).json();
+  setText('auth', auth.authenticated ? 'authenticated' : 'unauthenticated',
+          auth.authenticated ? 'ok' : 'err');
+  document.getElementById('oauth-btn').style.display =
+      auth.authenticated ? 'none' : 'inline-block';
+
+  const status = await (await fetch('/api/status')).json();
+  setText('mode', status.mode || '-');
+  if (status.account) {
+    setText('account',
+      'Equity: $' + status.account.equity.toFixed(2)
+      + ' | BP: $' + status.account.buying_power.toFixed(2)
+      + ' | Cash: $' + status.account.cash.toFixed(2)
+      + ' | DT count: ' + status.account.daytrade_count);
+  } else {
+    setText('account', '-');
+  }
+
+  const orb = await (await fetch('/api/orb')).json();
+  const orbRows = Object.entries(orb).map(function (entry) {
+    const sym = entry[0]; const st = entry[1];
+    return [
+      {text: sym},
+      {text: '$' + st.or_high.toFixed(2)},
+      {text: '$' + st.or_low.toFixed(2)},
+      {text: st.or_volume.toLocaleString()},
+      {text: st.or_locked ? 'YES' : 'no', cls: st.or_locked ? 'ok' : 'warn'},
+      {text: st.breakout_fired ? 'YES' : 'no', cls: st.breakout_fired ? 'ok' : ''},
+    ];
+  });
+  renderTable('#orb-table tbody', orbRows);
+
+  const positions = await (await fetch('/api/positions')).json();
+  const posRows = positions.map(function (p) {
+    const pnl = p.unrealized_pnl || 0;
+    return [
+      {text: p.symbol},
+      {text: String(p.qty)},
+      {text: '$' + (p.entry_price || 0).toFixed(2)},
+      {text: '$' + (p.current_price || 0).toFixed(2)},
+      {text: '$' + pnl.toFixed(2), cls: pnl >= 0 ? 'ok' : 'err'},
+    ];
+  });
+  renderTable('#pos-table tbody', posRows);
+}
+
+document.getElementById('oauth-btn').addEventListener('click', function () {
+  window.location = '/schwab/oauth/start';
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/")
+async def dashboard():
+    return HTMLResponse(_DASHBOARD_HTML)
 ```
-Expected: both endpoints return JSON without 500s.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run**
 
 ```bash
-git add src/bot/web.py
-git commit -m "Update dashboard for Schwab + ORB; add /api/orb endpoint"
+pytest tests/unit/test_dashboard_endpoints.py tests/unit/test_oauth_routes.py -v
+```
+Expected: all passed.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/bot/web.py tests/unit/test_dashboard_endpoints.py
+git commit -m "web.py: /api/* endpoints + ORB dashboard HTML"
 ```
 
 ---
