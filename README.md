@@ -1,8 +1,8 @@
-# Sgt Surge
+# Sgt Schwab
 
 > **DISCLAIMER: This project is for educational and research purposes only. It is not financial advice. Trading stocks involves substantial risk of loss. Past performance is not indicative of future results. You could lose some or all of your invested capital. Do not trade with money you cannot afford to lose. By using this software, you acknowledge that you are solely responsible for your own trading decisions and any resulting financial outcomes.**
 
-Algorithmic momentum day-trading bot targeting low-float stocks on tastytrade. Built for small accounts with aggressive risk management.
+Algorithmic momentum day-trading bot for Charles Schwab. Built for small accounts with aggressive risk management.
 
 ## Strategy
 
@@ -20,8 +20,8 @@ Algorithmic momentum day-trading bot targeting low-float stocks on tastytrade. B
 ## Prerequisites
 
 - **Python 3.11+**
-- **tastytrade account** -- [Sign up here](https://tastytrade.com/welcome/?referralCode=5VEAT9PR62) (referral link)
-- **tastytrade OAuth app** -- Create one at [developer.tastytrade.com](https://developer.tastytrade.com)
+- **Charles Schwab account** -- [Sign up here](https://www.schwab.com/)
+- **Schwab OAuth app** -- Create one in Schwab's developer portal
 - **Financial Modeling Prep API key** (free tier, optional) -- for float data enrichment. [Get one here](https://financialmodelingprep.com/developer/docs/)
 - **Podman** or **Docker** (for containerized deployment, optional for local dev)
 
@@ -30,8 +30,8 @@ Algorithmic momentum day-trading bot targeting low-float stocks on tastytrade. B
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/jacisjake/sgt-surge.git
-cd sgt-surge
+git clone https://github.com/jacisjake/sgt-schwab.git
+cd sgt-schwab
 
 python -m venv venv
 source venv/bin/activate  # macOS/Linux
@@ -49,22 +49,21 @@ cp .env.example .env
 Edit `.env` with your credentials. See the comments in `.env.example` for guidance on each variable.
 
 **Required:**
-- `TT_ACCOUNT_NUMBER` -- your tastytrade account number
-- Authentication (pick one):
-  - **OAuth (recommended)**: `TT_CLIENT_ID`, `TT_CLIENT_SECRET`, `TT_REFRESH_TOKEN`
-  - **Legacy**: `TT_USERNAME`, `TT_PASSWORD` (deprecated, may stop working)
+- `SCHWAB_CLIENT_ID` -- OAuth client ID from Schwab developer portal
+- `SCHWAB_CLIENT_SECRET` -- OAuth client secret
+- `SCHWAB_ACCOUNT_NUMBER` -- your Schwab account number
 - `TRADING_MODE` -- `paper` for paper trading, `live` for real money
 
 **Optional but recommended:**
 - `FMP_API_KEY` -- enables float filtering (free tier: 250 requests/day)
 
-### 3. Set up tastytrade OAuth
+### 3. Set up Charles Schwab OAuth
 
-1. Go to [developer.tastytrade.com](https://developer.tastytrade.com) and create an OAuth application
+1. Go to Schwab's developer portal and create an OAuth application
 2. Note your **Client ID** and **Client Secret**
-3. Generate a refresh token via "Create Grant" in the developer portal, or complete the OAuth flow from the bot's dashboard
-4. Add all three values to your `.env` file
-5. If deploying behind a reverse proxy, set `TT_OAUTH_REDIRECT_URI` to match the redirect URI in the developer portal exactly (e.g. `https://your-domain.com/trader/oauth/callback`)
+3. Register the redirect URI in the developer portal as `https://ut.gitsum.rest/schwab/oauth/callback` (or `http://localhost:8080/schwab/oauth/callback` for local dev)
+4. Add `SCHWAB_CLIENT_ID` and `SCHWAB_CLIENT_SECRET` to your `.env` file
+5. On first run, visit `http://localhost:8080` and click "Authorize Schwab" to complete the OAuth flow
 
 ### 4. Run the bot
 
@@ -85,7 +84,7 @@ python scripts/run_bot.py --check-signals # Check for signals once and exit
 ## Project Structure
 
 ```
-sgt-surge/
+sgt-schwab/
 ├── config/
 │   └── settings.py              # Pydantic settings (env var validation)
 ├── src/
@@ -133,9 +132,9 @@ sgt-surge/
 ├── deploy/
 │   ├── podman-compose.yml       # Container orchestration
 │   ├── deploy-remote.sh         # Remote deployment script
-│   ├── sgt-surge.service        # systemd service file
+│   ├── sgt-schwab.service       # systemd service file
 │   ├── supervisor.conf          # Supervisor config
-│   └── com.jacobmadsen.sgt-surge.plist  # macOS launchd config
+│   └── com.jacobmadsen.sgt-schwab.plist  # macOS launchd config
 ├── tests/
 │   └── unit/                    # Unit tests
 ├── state/                       # Runtime state (not tracked)
@@ -150,13 +149,9 @@ All configuration is done through environment variables (or `.env` file). See `.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TT_CLIENT_ID` | For OAuth | OAuth client ID from developer portal |
-| `TT_CLIENT_SECRET` | For OAuth | OAuth client secret |
-| `TT_REFRESH_TOKEN` | For OAuth | OAuth refresh token (auto-refreshed) |
-| `TT_ACCOUNT_NUMBER` | Yes | Your tastytrade account number |
-| `TT_OAUTH_REDIRECT_URI` | If behind proxy | Must match developer portal exactly |
-| `TT_USERNAME` | For legacy auth | tastytrade username (deprecated) |
-| `TT_PASSWORD` | For legacy auth | tastytrade password (deprecated) |
+| `SCHWAB_CLIENT_ID` | Yes | OAuth client ID from Schwab developer portal |
+| `SCHWAB_CLIENT_SECRET` | Yes | OAuth client secret |
+| `SCHWAB_ACCOUNT_NUMBER` | Yes | Your Schwab account number |
 
 ### Trading
 
@@ -187,11 +182,11 @@ All configuration is done through environment variables (or `.env` file). See `.
 
 Just run `python scripts/run_bot.py`. The bot runs in the foreground.
 
-For background execution on macOS, edit `deploy/com.jacobmadsen.sgt-surge.plist` with your paths and load it:
+For background execution on macOS, edit `deploy/com.jacobmadsen.sgt-schwab.plist` with your paths and load it:
 
 ```bash
-cp deploy/com.jacobmadsen.sgt-surge.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.jacobmadsen.sgt-surge.plist
+cp deploy/com.jacobmadsen.sgt-schwab.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.jacobmadsen.sgt-schwab.plist
 ```
 
 ### Container (Podman or Docker)
@@ -215,31 +210,36 @@ The container mounts persistent volumes for `state/` and `logs/`, exposes port 8
 Deploy to a remote Linux server with Podman:
 
 ```bash
-cd deploy
-./deploy-remote.sh user@your-server --build
+cd deploy && ./deploy-remote.sh jacisjake@ut.gitsum.rest --build
 ```
 
 **What the script does:**
-1. Creates `/opt/sgt-surge/` on the remote server
+1. Creates `/opt/sgt-schwab/` on the remote server
 2. Syncs project files via rsync (excludes venv, .git, logs, state, .env)
 3. Copies your local `.env` to the server on first deploy only (never overwrites)
 4. Builds the container image if `--build` is passed or no image exists
 5. Starts the container with `podman-compose up -d`
 
+**Schwab OAuth Setup**
+
+The Schwab OAuth callback is path-scoped: register `https://ut.gitsum.rest/schwab/oauth/callback` in the Schwab developer portal. No DNS or Caddy changes are required — the existing `ut.gitsum.rest` block proxies `/schwab/oauth/*` to the bot on port 8080.
+
+The first run will boot the bot in setup mode (no token yet). Visit `https://ut.gitsum.rest` and click "Authorize Schwab" to complete the OAuth flow; the bot will write `state/schwab_token.json` and refresh it automatically.
+
 **After first deploy**, edit the `.env` on the server directly:
 
 ```bash
-ssh user@your-server
-nano /opt/sgt-surge/.env
+ssh jacisjake@ut.gitsum.rest
+nano /opt/sgt-schwab/.env
 ```
 
 **Optional: systemd auto-start** -- copy and enable the service file:
 
 ```bash
-ssh user@your-server
-sudo cp /opt/sgt-surge/deploy/sgt-surge.service /etc/systemd/system/
+ssh jacisjake@ut.gitsum.rest
+sudo cp /opt/sgt-schwab/deploy/sgt-schwab.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now sgt-surge
+sudo systemctl enable --now sgt-schwab
 ```
 
 **Optional: reverse proxy with Caddy** -- if you want HTTPS access to the dashboard:
@@ -259,10 +259,10 @@ Check bot health on a remote server:
 
 ```bash
 # Quick status
-ssh user@your-server 'podman ps --filter name=sgt-surge'
+ssh jacisjake@ut.gitsum.rest 'podman ps --filter name=sgt-schwab'
 
 # Tail logs
-ssh user@your-server 'podman logs -f sgt-surge-bot'
+ssh jacisjake@ut.gitsum.rest 'podman logs -f sgt-schwab-bot'
 
 # Or use the included health check script (edit HOST inside first)
 bash scripts/healthcheck.sh
