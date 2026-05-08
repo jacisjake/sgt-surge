@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import pandas as pd
 from loguru import logger
 
 try:
@@ -21,6 +22,15 @@ except ImportError:  # pragma: no cover — surfaced at install time
 
 
 class SchwabClient:
+    _TIMEFRAME_TO_METHOD = {
+        "1Min": "get_price_history_every_minute",
+        "5Min": "get_price_history_every_five_minutes",
+        "15Min": "get_price_history_every_fifteen_minutes",
+        "30Min": "get_price_history_every_thirty_minutes",
+        "1Hour": "get_price_history_every_thirty_minutes",
+        "1Day": "get_price_history_every_day",
+    }
+
     def __init__(
         self,
         *,
@@ -133,3 +143,47 @@ class SchwabClient:
 
     def has_position(self, symbol: str) -> bool:
         return self.get_position(symbol) is not None
+
+    def get_bars(self, symbol: str, timeframe: str = "5Min", limit: int = 100) -> "pd.DataFrame":
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        method_name = self._TIMEFRAME_TO_METHOD.get(timeframe)
+        if not method_name:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+        method = getattr(self._client, method_name)
+        resp = method(symbol)
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"pricehistory failed: {resp.status_code}")
+        candles = resp.json().get("candles", [])
+        if not candles:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        df = pd.DataFrame(candles)
+        df["timestamp"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
+        df = df.set_index("timestamp")[["open", "high", "low", "close", "volume"]]
+        return df.tail(limit)
+
+    def get_latest_price(self, symbol: str) -> float:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        resp = self._client.get_quote(symbol)
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"get_quote failed: {resp.status_code}")
+        return float(resp.json()[symbol]["quote"]["lastPrice"])
+
+    def get_latest_quotes_with_change(self, symbols: list[str]) -> dict:
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        resp = self._client.get_quotes(symbols)
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"get_quotes failed: {resp.status_code}")
+        out = {}
+        for sym, payload in resp.json().items():
+            q = payload.get("quote", {})
+            out[sym] = {
+                "price": float(q.get("lastPrice", 0)),
+                "bid": float(q.get("bidPrice", 0)),
+                "ask": float(q.get("askPrice", 0)),
+                "change": float(q.get("netChange", 0)),
+                "change_pct": float(q.get("netPercentChangeInDouble", 0)),
+            }
+        return out

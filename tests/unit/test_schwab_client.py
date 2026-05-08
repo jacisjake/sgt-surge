@@ -126,3 +126,43 @@ def test_get_positions(schwab, mock_schwab_py_client):
     assert p["avg_entry_price"] == 10.0
     assert p["current_price"] == pytest.approx(11.0)
     assert p["unrealized_pl"] == 5.0
+
+
+def test_get_bars_5min(schwab, mock_schwab_py_client):
+    candles = [
+        {"datetime": 1715170200000, "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.4, "volume": 1000},
+        {"datetime": 1715170500000, "open": 10.4, "high": 10.7, "low": 10.3, "close": 10.6, "volume": 1500},
+    ]
+    mock_schwab_py_client.get_price_history_every_five_minutes.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {"candles": candles, "symbol": "AAPL", "empty": False},
+    )
+
+    bars = schwab.get_bars("AAPL", timeframe="5Min", limit=2)
+    assert len(bars) == 2
+    assert list(bars.columns) == ["open", "high", "low", "close", "volume"]
+    assert bars["close"].iloc[-1] == 10.6
+
+
+def test_get_latest_price(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.get_quote.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {"AAPL": {"quote": {"lastPrice": 10.55}}},
+    )
+    assert schwab.get_latest_price("AAPL") == 10.55
+
+
+def test_get_latest_quotes_multi_symbol(schwab, mock_schwab_py_client):
+    mock_schwab_py_client.get_quotes.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "AAPL": {"quote": {"lastPrice": 10.55, "bidPrice": 10.5, "askPrice": 10.6,
+                               "netChange": 0.5, "netPercentChangeInDouble": 5.0}},
+            "MSFT": {"quote": {"lastPrice": 20.0, "bidPrice": 19.9, "askPrice": 20.1,
+                               "netChange": 1.0, "netPercentChangeInDouble": 5.0}},
+        },
+    )
+    quotes = schwab.get_latest_quotes_with_change(["AAPL", "MSFT"])
+    assert quotes["AAPL"]["price"] == 10.55
+    assert quotes["AAPL"]["change_pct"] == 5.0
+    assert quotes["MSFT"]["bid"] == 19.9
