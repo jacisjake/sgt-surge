@@ -167,7 +167,7 @@ async def show_status():
 async def run_with_api():
     """Run bot with API server."""
     import uvicorn
-    from src.bot.api import app, set_bot
+    from src.bot.web import app, set_bot
     from src.bot.config import get_bot_config
     from src.bot.main import TradingBot, setup_signal_handlers
 

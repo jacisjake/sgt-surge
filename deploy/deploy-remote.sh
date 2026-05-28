@@ -30,8 +30,8 @@ rsync -avz --delete \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.git/' \
-    --exclude 'logs/' \
-    --exclude 'state/' \
+    --exclude '/logs/' \
+    --exclude '/state/' \
     --exclude '.env' \
     "$PROJECT_DIR/" "$REMOTE_HOST:$REMOTE_DIR/"
 
