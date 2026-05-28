@@ -101,13 +101,13 @@ function renderTable(tbodySelector, rows) {
 }
 
 async function refresh() {
-  const auth = await (await fetch('/api/auth/status')).json();
+  const auth = await (await fetch('/sgt/api/auth/status')).json();
   setText('auth', auth.authenticated ? 'authenticated' : 'unauthenticated',
           auth.authenticated ? 'ok' : 'err');
   document.getElementById('oauth-btn').style.display =
       auth.authenticated ? 'none' : 'inline-block';
 
-  const status = await (await fetch('/api/status')).json();
+  const status = await (await fetch('/sgt/api/status')).json();
   setText('mode', status.mode || '-');
   if (status.account) {
     setText('account',
@@ -119,7 +119,7 @@ async function refresh() {
     setText('account', '-');
   }
 
-  const orb = await (await fetch('/api/orb')).json();
+  const orb = await (await fetch('/sgt/api/orb')).json();
   const orbRows = Object.entries(orb).map(function (entry) {
     const sym = entry[0]; const st = entry[1];
     return [
@@ -133,7 +133,7 @@ async function refresh() {
   });
   renderTable('#orb-table tbody', orbRows);
 
-  const positions = await (await fetch('/api/positions')).json();
+  const positions = await (await fetch('/sgt/api/positions')).json();
   const posRows = positions.map(function (p) {
     const pnl = p.unrealized_pnl || 0;
     return [
@@ -192,7 +192,7 @@ async def schwab_oauth_callback(request: Request):
     except Exception as e:
         raise HTTPException(400, f"OAuth exchange failed: {e}")
     _bot.client.reload_from_disk()
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse("/sgt/", status_code=302)
 
 
 @app.get("/oauth/authorize")
