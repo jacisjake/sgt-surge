@@ -15,21 +15,21 @@ class TestPositionSizer:
     """Tests for PositionSizer class."""
 
     def test_fixed_fractional_basic(self, small_account):
-        """Test basic fixed fractional sizing."""
+        """Test basic fixed fractional sizing (uncapped by 25% max-position rule)."""
         sizer = PositionSizer(max_position_risk_pct=0.02)
 
         result = sizer.calculate_fixed_fractional(
             account_equity=small_account["equity"],  # $1000
             entry_price=100.0,
-            stop_price=95.0,  # 5% stop
+            stop_price=90.0,  # 10% stop -> $200 position fits inside 25% cap
         )
 
-        # Risk $20 (2% of $1000), stop is $5 away
-        # Position size should be 4 shares ($400)
-        assert result.shares == pytest.approx(4.0, rel=0.01)
-        assert result.dollar_amount == pytest.approx(400.0, rel=0.01)
+        # Risk $20 (2% of $1000), stop is $10 away -> 2 shares, $200 position
+        assert result.shares == pytest.approx(2.0, rel=0.01)
+        assert result.dollar_amount == pytest.approx(200.0, rel=0.01)
         assert result.risk_amount == pytest.approx(20.0, rel=0.01)
         assert result.method == SizingMethod.FIXED_FRACTIONAL
+        assert result.capped_by_max_position is False
 
     def test_fixed_fractional_tight_stop(self, small_account):
         """Tighter stop = larger position."""
