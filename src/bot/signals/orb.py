@@ -90,6 +90,8 @@ class OpeningRangeBreakout(SignalGenerator):
     def reset(self) -> None:
         self.state.clear()
 
-    # SignalGenerator compat — ORB is event-driven via on_bar, not generate()
-    def generate(self, symbol: str, bars, current_price: float) -> Optional[Signal]:
+    # SignalGenerator compat -- ORB is event-driven via on_bar, not generate().
+    # Accept and ignore extra kwargs (has_catalyst, symbol_trade_count, etc.)
+    # that the scanner-driven loop in main.py passes to legacy strategies.
+    def generate(self, symbol: str, bars, current_price: float, **_kwargs) -> Optional[Signal]:
         return None

@@ -223,15 +223,26 @@ class SchwabStreamClient:
     # -- Internal handlers (Schwab → our callback shape) -----------------
     def _handle_chart_equity(self, msg: dict) -> None:
         for content in msg.get("content", []):
-            self._aggregator.feed({
-                "symbol": content["key"],
-                "timestamp": _ms_to_iso(content.get("CHART_TIME") or content.get("3")),
-                "open": float(content.get("OPEN_PRICE") or content.get("4")),
-                "high": float(content.get("HIGH_PRICE") or content.get("5")),
-                "low": float(content.get("LOW_PRICE") or content.get("6")),
-                "close": float(content.get("CLOSE_PRICE") or content.get("7")),
-                "volume": int(content.get("VOLUME") or content.get("8")),
-            })
+            try:
+                ts_ms = content.get("CHART_TIME") or content.get("3")
+                if ts_ms is None:
+                    logger.debug(
+                        f"[STREAM] chart_equity missing timestamp; skipping: {content}"
+                    )
+                    continue
+                self._aggregator.feed({
+                    "symbol": content["key"],
+                    "timestamp": _ms_to_iso(ts_ms),
+                    "open": float(content.get("OPEN_PRICE") or content.get("4") or 0),
+                    "high": float(content.get("HIGH_PRICE") or content.get("5") or 0),
+                    "low": float(content.get("LOW_PRICE") or content.get("6") or 0),
+                    "close": float(content.get("CLOSE_PRICE") or content.get("7") or 0),
+                    "volume": int(content.get("VOLUME") or content.get("8") or 0),
+                })
+            except Exception as e:
+                logger.warning(
+                    f"[STREAM] bad chart_equity content {content!r}: {e}"
+                )
 
     def _dispatch_bar_to_callbacks(self, bar: dict) -> None:
         for cb in self._bar_callbacks:
