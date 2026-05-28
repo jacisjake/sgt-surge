@@ -8,6 +8,7 @@ Dashboard HTML and /api/* endpoints are added in Task 20.
 from __future__ import annotations
 
 import json
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -206,7 +207,10 @@ async def schwab_oauth_callback(request: Request):
     token_path = _bot.config.schwab_token_path
 
     def token_write_func(token, *args, **kwargs):
-        with open(token_path, "w") as f:
+        # Owner-only at creation time so the refresh token never lands on disk
+        # world-readable, even briefly. /opt/sgt-schwab is on a shared host.
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(token, f)
 
     try:
