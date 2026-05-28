@@ -7,20 +7,27 @@ Dashboard HTML and /api/* endpoints are added in Task 20.
 
 from __future__ import annotations
 
-from urllib.parse import urlencode
+import json
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 try:
-    from schwab.auth import client_from_received_url
+    from schwab.auth import client_from_received_url, get_auth_context
 except ImportError:  # pragma: no cover
     client_from_received_url = None
+    get_auth_context = None
 
 
 app = FastAPI(title="sgt-schwab", version="1.0.0")
 
 _bot = None
+
+# AuthContexts produced by /schwab/oauth/start, keyed by their OAuth state.
+# /schwab/oauth/callback looks them up by the `state` query param Schwab
+# sends back. Module-level state is fine: a single bot process drives one
+# OAuth flow at a time.
+_pending_auth_contexts: dict = {}
 
 
 def set_bot(bot) -> None:
@@ -168,26 +175,47 @@ async def dashboard():
 async def schwab_oauth_start():
     if _bot is None:
         raise HTTPException(503, "Bot not initialized")
-    params = {
-        "client_id": _bot.config.schwab_app_key,
-        "redirect_uri": _bot.config.schwab_oauth_redirect_uri,
-        "response_type": "code",
-    }
-    url = "https://api.schwabapi.com/v1/oauth/authorize?" + urlencode(params)
-    return RedirectResponse(url, status_code=307)
+    if get_auth_context is None:
+        raise HTTPException(500, "schwab-py is not installed")
+    ctx = get_auth_context(
+        api_key=_bot.config.schwab_app_key,
+        callback_url=_bot.config.schwab_oauth_redirect_uri,
+    )
+    _pending_auth_contexts[ctx.state] = ctx
+    return RedirectResponse(ctx.authorization_url, status_code=307)
 
 
 @app.get("/schwab/oauth/callback")
 async def schwab_oauth_callback(request: Request):
     if _bot is None:
         raise HTTPException(503, "Bot not initialized")
-    full_url = str(request.url)
+    state = request.query_params.get("state", "")
+    ctx = _pending_auth_contexts.pop(state, None)
+    if ctx is None:
+        raise HTTPException(
+            400,
+            "OAuth state not found or already used. "
+            "Restart the flow at /schwab/oauth/start.",
+        )
+
+    # Caddy proxies the bot at localhost:8080, so request.url is the internal
+    # URL. Rebuild the public URL Schwab actually redirected to; schwab-py
+    # validates state against this string.
+    received_url = f"{_bot.config.schwab_oauth_redirect_uri}?{request.url.query}"
+
+    token_path = _bot.config.schwab_token_path
+
+    def token_write_func(token, *args, **kwargs):
+        with open(token_path, "w") as f:
+            json.dump(token, f)
+
     try:
         client_from_received_url(
             api_key=_bot.config.schwab_app_key,
             app_secret=_bot.config.schwab_app_secret,
-            received_url=full_url,
-            token_path=_bot.config.schwab_token_path,
+            auth_context=ctx,
+            received_url=received_url,
+            token_write_func=token_write_func,
         )
     except Exception as e:
         raise HTTPException(400, f"OAuth exchange failed: {e}")
