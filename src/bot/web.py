@@ -207,11 +207,26 @@ async def schwab_oauth_callback(request: Request):
     token_path = _bot.config.schwab_token_path
 
     def token_write_func(token, *args, **kwargs):
-        # Owner-only at creation time so the refresh token never lands on disk
-        # world-readable, even briefly. /opt/sgt-schwab is on a shared host.
-        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(token, f)
+        # On a shared host the refresh token is a real credential, so write
+        # it via a 0o600 tempfile in the same dir and atomically rename into
+        # place. tempfile.mkstemp creates with O_EXCL|O_CREAT|O_RDWR and mode
+        # 0o600, so we never follow a symlink at token_path and never expose
+        # the file with relaxed permissions even briefly.
+        import tempfile
+        dirname = os.path.dirname(token_path) or "."
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".schwab_token.", dir=dirname, text=True
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(token, f)
+            os.replace(tmp_path, token_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     try:
         client_from_received_url(
