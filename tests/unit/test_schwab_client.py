@@ -74,6 +74,35 @@ def test_get_account_returns_normalized_dict(schwab, mock_schwab_py_client):
     assert out["status"] == "active"
 
 
+def test_get_account_cash_account_buying_power_falls_back_to_cash(schwab, mock_schwab_py_client):
+    # Cash accounts have no buyingPower field; Schwab only returns
+    # cashAvailableForTrading. Ensure we surface that as buying_power so the
+    # sizer doesn't see BP=0 and refuse every trade.
+    mock_schwab_py_client.get_account.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "securitiesAccount": {
+                "currentBalances": {
+                    "liquidationValue": 198.04,
+                    "cashAvailableForTrading": 198.04,
+                    "cashBalance": 198.04,
+                    # NO buyingPower key — matches Schwab's real cash-account payload
+                },
+                "isDayTrader": False,
+                "roundTrips": 0,
+                "type": "CASH",
+                "positions": [],
+            }
+        },
+    )
+
+    out = schwab.get_account()
+    assert out["buying_power"] == 198.04
+    assert out["cash"] == 198.04
+    assert out["equity"] == 198.04
+    assert out["type"] == "CASH"
+
+
 def test_get_buying_power_and_equity(schwab, mock_schwab_py_client):
     mock_schwab_py_client.get_account.return_value = MagicMock(
         status_code=200,

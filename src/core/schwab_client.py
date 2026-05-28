@@ -118,9 +118,17 @@ class SchwabClient:
             raise RuntimeError(f"get_account failed: {resp.status_code}")
         sa = resp.json()["securitiesAccount"]
         bal = sa.get("currentBalances", {})
+        # Cash accounts have no `buyingPower` field; Schwab reports the
+        # tradable balance as cashAvailableForTrading. Fall through so the
+        # field works for both account types.
+        buying_power = float(
+            bal.get("buyingPower")
+            or bal.get("cashAvailableForTrading")
+            or 0
+        )
         return {
             "equity": float(bal.get("liquidationValue", 0)),
-            "buying_power": float(bal.get("buyingPower", 0)),
+            "buying_power": buying_power,
             "cash": float(bal.get("cashAvailableForTrading", 0)),
             "daytrade_count": int(sa.get("roundTrips", 0)),
             "is_pdt": bool(sa.get("isDayTrader", False)),
