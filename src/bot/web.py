@@ -304,6 +304,28 @@ async def positions() -> list[dict]:
     return [p.to_dict() for p in _bot.position_manager.get_open_positions()]
 
 
+@app.post("/admin/lock_or_now")
+async def admin_lock_or_now() -> dict:
+    """Manually trigger the OR-lock job. Not routed via Caddy, so only
+    reachable from the container host (curl http://localhost:8080/...).
+    Used to recover from a missed 09:45:30 ET scheduler fire."""
+    if _bot is None:
+        raise HTTPException(503, "Bot not initialized")
+    await _bot._lock_opening_ranges()
+    return {
+        "ok": True,
+        "orb_state": {
+            sym: {
+                "or_high": st.or_high,
+                "or_low": st.or_low,
+                "or_volume": st.or_volume,
+                "or_locked": st.or_locked,
+            }
+            for sym, st in _bot.strategy.state.items()
+        },
+    }
+
+
 @app.get("/api/scanner")
 async def scanner() -> list[dict]:
     if _bot is None:

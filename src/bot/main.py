@@ -14,7 +14,7 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, time as dtime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -749,7 +749,11 @@ class TradingBot:
     # -- Opening Range Lock -----------------------------------------------
 
     async def _lock_opening_ranges(self) -> None:
-        """At 9:45:30 ET, fetch the 9:30-9:45 window for each watchlist symbol."""
+        """Fetch the 9:30-9:45 ET window for each watchlist symbol and lock OR.
+
+        Filter explicitly by timestamp instead of using limit=N so the job
+        works even if it fires late (e.g., scheduler retry after a restart).
+        """
         if not self._running:
             return
         symbols = [c.symbol for c in self._scanner_results]
@@ -758,17 +762,35 @@ class TradingBot:
             logger.info("[OR-LOCK] No symbols on watchlist; skipping.")
             return
 
+        from src.core.market_calendar import ET as _ET
+        today_et = datetime.now(_ET).date()
+        or_start = datetime.combine(
+            today_et, dtime(9, 30), tzinfo=_ET
+        ).astimezone(timezone.utc)
+        or_end = datetime.combine(
+            today_et, dtime(9, 45), tzinfo=_ET
+        ).astimezone(timezone.utc)
+
         for symbol in symbols:
             try:
-                bars = self.client.get_bars(symbol, timeframe="5Min", limit=3)
+                # Pull enough recent bars to cover the OR window regardless
+                # of when this job actually fires.
+                bars = self.client.get_bars(symbol, timeframe="5Min", limit=20)
                 if bars is None or bars.empty:
                     logger.warning(f"[OR-LOCK] {symbol}: no bars returned")
                     continue
-                self.strategy.lock_or(symbol, bars)
+                or_bars = bars[(bars.index >= or_start) & (bars.index < or_end)]
+                if or_bars.empty:
+                    logger.warning(
+                        f"[OR-LOCK] {symbol}: no bars in OR window "
+                        f"{or_start.isoformat()} -> {or_end.isoformat()}"
+                    )
+                    continue
+                self.strategy.lock_or(symbol, or_bars)
                 st = self.strategy.state[symbol]
                 logger.info(
                     f"[OR-LOCK] {symbol}: H=${st.or_high:.2f} L=${st.or_low:.2f} "
-                    f"V={st.or_volume:,}"
+                    f"V={st.or_volume:,} (bars={len(or_bars)})"
                 )
             except Exception as e:
                 logger.error(f"[OR-LOCK] {symbol} failed: {e}")
