@@ -762,13 +762,14 @@ class TradingBot:
             logger.info("[OR-LOCK] No symbols on watchlist; skipping.")
             return
 
-        from src.core.market_calendar import ET as _ET
+        import pytz
+        _ET = pytz.timezone("America/New_York")
         today_et = datetime.now(_ET).date()
-        or_start = datetime.combine(
-            today_et, dtime(9, 30), tzinfo=_ET
+        or_start = _ET.localize(
+            datetime.combine(today_et, dtime(9, 30))
         ).astimezone(timezone.utc)
-        or_end = datetime.combine(
-            today_et, dtime(9, 45), tzinfo=_ET
+        or_end = _ET.localize(
+            datetime.combine(today_et, dtime(9, 45))
         ).astimezone(timezone.utc)
 
         for symbol in symbols:
