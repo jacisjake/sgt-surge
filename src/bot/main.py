@@ -91,21 +91,19 @@ class TradingBot:
             max_daily_trades=self.config.max_daily_trades,
         )
 
-        # Float data provider
-        self.float_provider = FloatDataProvider(
-            fmp_api_key=self.config.fmp_api_key,
-        )
+        # Float data provider (FMP key removed in Schwab migration; provider
+        # handles None gracefully and skips the FMP fetch path).
+        self.float_provider = FloatDataProvider(fmp_api_key=None)
 
         # TradingView screener (primary scanner, no API key required)
         self.tv_screener = TradingViewScreener() if self.config.use_tradingview_screener else None
 
-        # Momentum scanner (TradingView primary)
+        # Momentum scanner. Catalyst-news enrichment was dropped with the
+        # tastytrade -> Schwab migration (Schwab has no news endpoint).
         self.momentum_scanner = MomentumScreener(
             float_provider=self.float_provider,
             client=self.client,
-            news_enabled=self.config.scanner_enable_news_check,
-            news_lookback_hours=self.config.scanner_news_lookback_hours,
-            news_max_articles=self.config.scanner_news_max_articles,
+            news_enabled=False,
             tv_screener=self.tv_screener,
             use_tradingview=self.config.use_tradingview_screener,
         )
