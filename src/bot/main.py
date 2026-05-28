@@ -520,6 +520,12 @@ class TradingBot:
         candidate_symbols = [c.symbol for c in candidates]
         await self.stream_handler.update_watchlist(candidate_symbols)
 
+        # Register watchlist with the ORB strategy so the dashboard reflects
+        # them between 9:25 and 9:45:30 ET. lock_or auto-registers too, but
+        # explicit register makes the watchlist visible pre-lock.
+        for symbol in candidate_symbols:
+            self.strategy.register(symbol)
+
         # For each candidate, try to generate a signal
         for candidate in candidates:
             symbol = candidate.symbol
