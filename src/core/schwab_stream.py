@@ -7,11 +7,31 @@ adds the BarAggregator that rolls 1-min OHLCV bars into N-min bars.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Optional
 
 from loguru import logger
+
+
+def _invoke_cb(cb, payload, *, label: str) -> None:
+    """Call a stream callback. If it returns a coroutine, schedule it so
+    async handlers (StreamHandler.on_bar/on_quote/on_trade_update are all
+    async) are actually awaited."""
+    try:
+        result = cb(payload)
+    except Exception as e:
+        logger.error(f"[STREAM] {label} callback raised: {e}")
+        return
+    if inspect.iscoroutine(result):
+        try:
+            asyncio.get_running_loop().create_task(result)
+        except RuntimeError:
+            logger.error(
+                f"[STREAM] {label} callback is async but no running event "
+                "loop -- coroutine dropped"
+            )
 
 try:
     from schwab.streaming import StreamClient
@@ -215,10 +235,7 @@ class SchwabStreamClient:
 
     def _dispatch_bar_to_callbacks(self, bar: dict) -> None:
         for cb in self._bar_callbacks:
-            try:
-                cb(bar)
-            except Exception as e:
-                logger.error(f"[STREAM] bar callback raised: {e}")
+            _invoke_cb(cb, bar, label="bar")
 
     def _handle_quote(self, msg: dict) -> None:
         for content in msg.get("content", []):
@@ -230,17 +247,11 @@ class SchwabStreamClient:
                 "timestamp": _now_iso(),
             }
             for cb in self._quote_callbacks:
-                try:
-                    cb(quote)
-                except Exception as e:
-                    logger.error(f"[STREAM] quote callback raised: {e}")
+                _invoke_cb(cb, quote, label="quote")
 
     def _handle_trade_update(self, msg: dict) -> None:
         for cb in self._trade_callbacks:
-            try:
-                cb(msg)
-            except Exception as e:
-                logger.error(f"[STREAM] trade callback raised: {e}")
+            _invoke_cb(cb, msg, label="trade")
 
 
 def _ms_to_iso(ms) -> str:

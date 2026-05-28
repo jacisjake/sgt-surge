@@ -17,6 +17,7 @@ from loguru import logger
 
 try:
     from schwab.auth import easy_client
+    from schwab.client import Client as _SchwabSyncClient
     from schwab.orders.equities import (
         equity_buy_market,
         equity_sell_market,
@@ -32,6 +33,7 @@ try:
     )
 except ImportError:  # pragma: no cover — surfaced at install time
     easy_client = None
+    _SchwabSyncClient = None
     equity_buy_market = equity_sell_market = equity_buy_limit = equity_sell_limit = None
     _OrderBuilder = _Duration = _Session = _OrderType = _EquityInstruction = None
 
@@ -108,7 +110,10 @@ class SchwabClient:
     def get_account(self) -> dict:
         if not self.is_authenticated:
             raise RuntimeError("SchwabClient not authenticated")
-        resp = self._client.get_account(self._account_hash, fields=["positions"])
+        resp = self._client.get_account(
+            self._account_hash,
+            fields=[_SchwabSyncClient.Account.Fields.POSITIONS],
+        )
         if resp.status_code != httpx.codes.OK:
             raise RuntimeError(f"get_account failed: {resp.status_code}")
         sa = resp.json()["securitiesAccount"]
