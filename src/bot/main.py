@@ -205,15 +205,14 @@ class TradingBot:
         # 2. Initial scan (REST) to get watchlist
         await self._run_momentum_scan()
 
-        # 3. Connect Schwab streams
-        logger.info("[WS] Connecting to Schwab streams...")
+        # 3. Connect Schwab data stream. The account_activity (trade-update)
+        # stream is intentionally not connected: dry_run fabricates fills
+        # locally, and live mode polls get_orders inside OrderExecutor.
+        # Sharing a single stream connection avoids the keepalive races
+        # we hit when two loops were both awaiting handle_message().
+        logger.info("[WS] Connecting to Schwab data stream...")
         data_ok = await self.ws_client.connect_data()
-        trade_ok = await self.ws_client.connect_trades()
-
-        logger.info(
-            f"[WS] Connections: data={'OK' if data_ok else 'FAILED'}, "
-            f"trade={'OK' if trade_ok else 'FAILED'}"
-        )
+        logger.info(f"[WS] Data stream: {'OK' if data_ok else 'FAILED'}")
 
         # 4. Subscribe to scanner results + open positions
         scan_symbols = [c.symbol for c in self._scanner_results]
@@ -244,7 +243,6 @@ class TradingBot:
         # NOT asyncio.gather — the SDK's anyio cancel scopes leak CancelledError
         # which would cancel ALL tasks in a gather. Independent tasks are isolated.
         data_task = asyncio.create_task(self._resilient_data_loop())
-        trade_task = asyncio.create_task(self._resilient_trade_loop())
         poll_task = asyncio.create_task(self._position_poll_loop())
         scan_task = asyncio.create_task(self._scan_loop())
 
@@ -252,7 +250,7 @@ class TradingBot:
         await self._shutdown_event.wait()
 
         # Clean shutdown: cancel the background tasks
-        for task in [data_task, trade_task, poll_task, scan_task]:
+        for task in [data_task, poll_task, scan_task]:
             task.cancel()
             try:
                 await task
@@ -260,39 +258,37 @@ class TradingBot:
                 pass
 
     async def _resilient_data_loop(self) -> None:
-        """Run the DXLink data loop with crash recovery.
+        """Pump the Schwab data stream, reconnecting on every disconnect.
 
-        Catches everything including CancelledError from SDK cancel scopes
-        and BaseExceptionGroup from anyio task groups. Restarts automatically.
+        Schwab's WebSocket dies on keepalive timeout periodically; the
+        previous version just slept and tried handle_message on the dead
+        socket forever. Tear down and re-login with exponential backoff.
         """
+        backoff = 5
         while not self._shutdown_event.is_set():
             try:
-                logger.debug("[DXLink] Entering data loop...")
+                logger.debug("[STREAM] Entering data loop...")
                 await self.ws_client.run_data_loop()
-                logger.warning("[DXLink] Data loop exited normally")
+                logger.warning("[STREAM] Data loop exited normally")
             except BaseException as e:
                 if self._shutdown_event.is_set():
                     break
                 logger.error(
-                    f"[DXLink] Data loop crashed ({type(e).__name__}: {e}), "
-                    f"restarting in 10s..."
+                    f"[STREAM] Data loop crashed ({type(e).__name__}: {e}), "
+                    f"reconnecting in {backoff}s..."
                 )
-                self.ws_client._force_reset_streamer()
-                await asyncio.sleep(10)
-
-    async def _resilient_trade_loop(self) -> None:
-        """Run the order polling loop with crash recovery."""
-        while not self._shutdown_event.is_set():
-            try:
-                await self.ws_client.run_trade_loop()
-            except BaseException as e:
-                if self._shutdown_event.is_set():
-                    break
-                logger.error(
-                    f"[DXLink] Trade loop crashed ({type(e).__name__}: {e}), "
-                    f"restarting in 10s..."
-                )
-                await asyncio.sleep(10)
+                await asyncio.sleep(backoff)
+                try:
+                    ok = await self.ws_client.reconnect_data()
+                    if ok:
+                        logger.info("[STREAM] Reconnected successfully")
+                        backoff = 5
+                    else:
+                        logger.error("[STREAM] Reconnect returned False")
+                        backoff = min(backoff * 2, 60)
+                except Exception as recon_err:
+                    logger.error(f"[STREAM] Reconnect raised: {recon_err}")
+                    backoff = min(backoff * 2, 60)
 
     async def _scan_loop(self) -> None:
         """

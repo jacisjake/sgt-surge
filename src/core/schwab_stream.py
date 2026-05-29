@@ -219,12 +219,41 @@ class SchwabStreamClient:
         self._stream = None
         self._data_connected = False
         self._trade_connected = False
+        self._subscribed = {"bars": set(), "quotes": set()}
+
+    async def reconnect_data(self) -> bool:
+        """Tear down a dead stream, log back in, and restore subscriptions.
+
+        Schwab's WebSocket dies on keepalive timeout fairly regularly. The
+        upstream loop calls this on any handle_message exception so the
+        bot keeps receiving bars across disconnects.
+        """
+        saved_bars = list(self._subscribed.get("bars", set()))
+        saved_quotes = list(self._subscribed.get("quotes", set()))
+        await self.disconnect()
+        ok = await self.connect_data()
+        if not ok:
+            return False
+        if saved_bars or saved_quotes:
+            await self.subscribe(bars=saved_bars, quotes=saved_quotes)
+            logger.info(
+                f"[STREAM] Reconnected; resubscribed bars={len(saved_bars)} "
+                f"quotes={len(saved_quotes)}"
+            )
+        return True
 
     # -- Internal handlers (Schwab → our callback shape) -----------------
     def _handle_chart_equity(self, msg: dict) -> None:
         for content in msg.get("content", []):
             try:
-                ts_ms = content.get("CHART_TIME") or content.get("3")
+                # Schwab's CHART_EQUITY service sends the timestamp as
+                # CHART_TIME_MILLIS (milliseconds since epoch). Earlier
+                # guesses at the field name silently dropped every bar.
+                ts_ms = (
+                    content.get("CHART_TIME_MILLIS")
+                    or content.get("CHART_TIME")
+                    or content.get("3")
+                )
                 if ts_ms is None:
                     logger.debug(
                         f"[STREAM] chart_equity missing timestamp; skipping: {content}"
