@@ -93,5 +93,13 @@ class OpeningRangeBreakout(SignalGenerator):
     # SignalGenerator compat -- ORB is event-driven via on_bar, not generate().
     # Accept and ignore extra kwargs (has_catalyst, symbol_trade_count, etc.)
     # that the scanner-driven loop in main.py passes to legacy strategies.
+
+    def to_dict(self) -> dict:
+        from dataclasses import asdict
+        return {sym: asdict(st) for sym, st in self.state.items()}
+
+    def load_state(self, data: dict) -> None:
+        self.state = {sym: _ORState(**v) for sym, v in data.items()}
+
     def generate(self, symbol: str, bars, current_price: float, **_kwargs) -> Optional[Signal]:
         return None

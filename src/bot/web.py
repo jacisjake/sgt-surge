@@ -312,6 +312,8 @@ async def admin_lock_or_now() -> dict:
     if _bot is None:
         raise HTTPException(503, "Bot not initialized")
     await _bot._lock_opening_ranges()
+    # _lock_opening_ranges saves state too, but be explicit for the admin path
+    _bot._save_orb_state()
     return {
         "ok": True,
         "orb_state": {

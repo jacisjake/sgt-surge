@@ -202,6 +202,10 @@ class TradingBot:
         if stale_count:
             logger.info(f"[STARTUP] Cleared {stale_count} stale signals from previous session")
 
+        # 1c. Restore in-day ORB state from disk so an in-day restart keeps
+        # the morning's locks (today's date only; stale files are ignored).
+        self._load_orb_state()
+
         # 2. Initial scan (REST) to get watchlist
         await self._run_momentum_scan()
 
@@ -512,15 +516,27 @@ class TradingBot:
                 f"relVol={c.relative_volume:.1f}x{float_str}{news_str}"
             )
 
-        # Update WebSocket subscriptions with new candidates
         candidate_symbols = [c.symbol for c in candidates]
-        await self.stream_handler.update_watchlist(candidate_symbols)
 
         # Register watchlist with the ORB strategy so the dashboard reflects
         # them between 9:25 and 9:45:30 ET. lock_or auto-registers too, but
         # explicit register makes the watchlist visible pre-lock.
         for symbol in candidate_symbols:
             self.strategy.register(symbol)
+
+        # Persist ORB state so an in-day restart keeps the morning's locks.
+        self._save_orb_state()
+
+        # Stream subscriptions must be the UNION of current scanner candidates,
+        # every symbol the ORB strategy is tracking (which includes the 09:45:30
+        # locked symbols), and open positions. The previous code only sent
+        # candidate_symbols, which silently unsubscribed locked ORB symbols
+        # as the scanner refreshed -- so DAIC could go above its OR high
+        # without the bot ever seeing the bar that crossed it.
+        locked_orb_symbols = list(self.strategy.state.keys())
+        pos_symbols = [p.symbol for p in self.position_manager.get_open_positions()]
+        watchlist = sorted(set(candidate_symbols + locked_orb_symbols + pos_symbols))
+        await self.stream_handler.update_watchlist(watchlist)
 
         # For each candidate, try to generate a signal
         for candidate in candidates:
@@ -731,8 +747,10 @@ class TradingBot:
         # Reset stream handler daily counters
         self.stream_handler.reset_daily()
 
-        # Reset ORB strategy state for the new day
+        # Reset ORB strategy state for the new day, including the on-disk
+        # snapshot so a daily reset can't be undone by a stale state file.
         self.strategy.reset()
+        self._clear_orb_state()
 
         # Reset portfolio limits daily counters
         self.portfolio_limits.reset_daily_limits()
@@ -791,6 +809,74 @@ class TradingBot:
                 )
             except Exception as e:
                 logger.error(f"[OR-LOCK] {symbol} failed: {e}")
+
+        # Persist the freshly locked ORB state so a restart preserves it.
+        self._save_orb_state()
+
+    # -- ORB state persistence --------------------------------------------
+
+    def _orb_state_path(self) -> "Path":
+        from pathlib import Path
+        return Path(self.config.state_dir) / "orb_state.json"
+
+    def _save_orb_state(self) -> None:
+        """Write current ORB strategy state to disk so an in-day restart
+        keeps the morning's locks. Atomic: tempfile + os.replace."""
+        try:
+            import os, json, tempfile, pytz
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            path = self._orb_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"date": today, "state": self.strategy.to_dict()}
+            fd, tmp = tempfile.mkstemp(
+                prefix=".orb_state.", dir=str(path.parent), text=True
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(payload, f)
+                os.replace(tmp, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
+        except Exception as e:
+            logger.warning(f"[ORB] save state failed: {e}")
+
+    def _load_orb_state(self) -> bool:
+        """Restore ORB strategy state from disk if the file is from today."""
+        path = self._orb_state_path()
+        if not path.exists():
+            return False
+        try:
+            import json, pytz
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            with open(path) as f:
+                data = json.load(f)
+            file_date = data.get("date")
+            if file_date != today:
+                logger.info(
+                    f"[ORB] state file is from {file_date}, today is {today}; "
+                    f"ignoring (will be cleared on daily reset)"
+                )
+                return False
+            self.strategy.load_state(data.get("state", {}))
+            n = len(self.strategy.state)
+            locked = sum(1 for st in self.strategy.state.values() if st.or_locked)
+            logger.info(f"[ORB] restored state from disk: {n} symbols ({locked} locked)")
+            return True
+        except Exception as e:
+            logger.warning(f"[ORB] load state failed: {e}")
+            return False
+
+    def _clear_orb_state(self) -> None:
+        try:
+            self._orb_state_path().unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"[ORB] clear state failed: {e}")
 
     # -- Broker Sync ------------------------------------------------------
 
