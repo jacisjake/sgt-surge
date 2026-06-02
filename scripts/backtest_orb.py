@@ -332,7 +332,7 @@ def main() -> int:
         days_run = 0
         for d in dates:
             hist = load_history(d) or {}
-            day_syms = sorted(hist.keys()) if hist else []
+            day_syms = sorted(s for s, v in hist.items() if v.get("or_locked")) if hist else []
             if not day_syms:
                 print(f"=== {d.isoformat()}: history file empty or missing, skipping ===\n")
                 continue
@@ -355,8 +355,10 @@ def main() -> int:
     elif target_date is not None:
         hist = load_history(target_date) or {}
         if hist:
-            symbols = sorted(hist.keys())
-            source = f"history/{target_date.isoformat()}.json"
+            # Only include symbols actually locked at 09:45:30 ET, not later
+            # scanner additions that the bot couldn't trade-evaluate.
+            symbols = sorted(s for s, v in hist.items() if v.get("or_locked"))
+            source = f"history/{target_date.isoformat()}.json (or_locked only)"
         else:
             symbols = []
             source = "history (missing)"
