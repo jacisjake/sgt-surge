@@ -810,8 +810,10 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"[OR-LOCK] {symbol} failed: {e}")
 
-        # Persist the freshly locked ORB state so a restart preserves it.
+        # Persist the freshly locked ORB state so a restart preserves it,
+        # and write an immutable per-day snapshot for backtests/audit.
         self._save_orb_state()
+        self._save_orb_history()
 
     # -- ORB state persistence --------------------------------------------
 
@@ -877,6 +879,29 @@ class TradingBot:
             self._orb_state_path().unlink(missing_ok=True)
         except Exception as e:
             logger.warning(f"[ORB] clear state failed: {e}")
+
+    def _save_orb_history(self) -> None:
+        """Write an immutable per-day snapshot of the locked ORB state.
+
+        Backtests read these to reproduce real scanner picks day-by-day
+        rather than re-running today's picks against historical bars.
+        Files live at state/orb_history/YYYY-MM-DD.json.
+        """
+        try:
+            import os, json, pytz
+            from pathlib import Path
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            hist_dir = Path(self.config.state_dir) / "orb_history"
+            hist_dir.mkdir(parents=True, exist_ok=True)
+            path = hist_dir / f"{today}.json"
+            payload = {"date": today, "state": self.strategy.to_dict()}
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+            n = len(payload["state"])
+            logger.info(f"[ORB] wrote history snapshot {path.name} ({n} symbols)")
+        except Exception as e:
+            logger.warning(f"[ORB] save history failed: {e}")
 
     # -- Broker Sync ------------------------------------------------------
 
