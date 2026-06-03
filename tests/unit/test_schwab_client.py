@@ -7,7 +7,7 @@ from src.core.schwab_client import SchwabClient
 
 @pytest.fixture
 def schwab(mock_schwab_py_client):
-    with patch("src.core.schwab_client.easy_client", return_value=mock_schwab_py_client):
+    with patch("src.core.schwab_client.client_from_token_file", return_value=mock_schwab_py_client):
         client = SchwabClient(
             app_key="K", app_secret="S",
             callback_url="https://ut.gitsum.rest/schwab/oauth/callback",
@@ -26,7 +26,7 @@ def test_account_hash_resolved_from_first_account(schwab):
 
 
 def test_account_hash_pinned_via_constructor(mock_schwab_py_client):
-    with patch("src.core.schwab_client.easy_client", return_value=mock_schwab_py_client):
+    with patch("src.core.schwab_client.client_from_token_file", return_value=mock_schwab_py_client):
         client = SchwabClient(
             app_key="K", app_secret="S",
             callback_url="https://x/y", token_path="/tmp/t.json",
@@ -39,7 +39,7 @@ def test_unauthenticated_when_token_missing(monkeypatch):
     def boom(*a, **kw):
         raise FileNotFoundError("no token")
 
-    monkeypatch.setattr("src.core.schwab_client.easy_client", boom)
+    monkeypatch.setattr("src.core.schwab_client.client_from_token_file", boom)
     client = SchwabClient(
         app_key="K", app_secret="S",
         callback_url="https://x/y", token_path="/tmp/missing.json",

@@ -16,7 +16,7 @@ import pandas as pd
 from loguru import logger
 
 try:
-    from schwab.auth import easy_client
+    from schwab.auth import client_from_token_file
     from schwab.client import Client as _SchwabSyncClient
     from schwab.orders.equities import (
         equity_buy_market,
@@ -32,7 +32,7 @@ try:
         EquityInstruction as _EquityInstruction,
     )
 except ImportError:  # pragma: no cover — surfaced at install time
-    easy_client = None
+    client_from_token_file = None
     _SchwabSyncClient = None
     equity_buy_market = equity_sell_market = equity_buy_limit = equity_sell_limit = None
     _OrderBuilder = _Duration = _Session = _OrderType = _EquityInstruction = None
@@ -70,16 +70,26 @@ class SchwabClient:
         if not (self._app_key and self._app_secret):
             logger.warning("[SCHWAB] No app credentials in env — bot starts unauthenticated.")
             return
+        # Use client_from_token_file directly rather than easy_client because
+        # our callback URL is ut.gitsum.rest (not 127.0.0.1) and easy_client
+        # tries to fall back to client_from_login_flow when the token nears
+        # its max_token_age (6.5d default), which fails with "Disallowed
+        # hostname" on our deployment.
         try:
-            self._client = easy_client(
-                api_key=self._app_key,
-                app_secret=self._app_secret,
-                callback_url=self._callback_url,
-                token_path=self._token_path,
+            self._client = client_from_token_file(
+                self._token_path, self._app_key, self._app_secret
             )
             self._resolve_account_hash()
-        except (FileNotFoundError, Exception) as e:
-            logger.warning(f"[SCHWAB] Could not load token: {e}. Awaiting OAuth via dashboard.")
+        except FileNotFoundError as e:
+            logger.warning(
+                f"[SCHWAB] Token file missing at {self._token_path}: {e}. "
+                f"Awaiting OAuth via dashboard."
+            )
+            self._client = None
+        except Exception as e:
+            logger.warning(
+                f"[SCHWAB] Could not load token: {e}. Awaiting OAuth via dashboard."
+            )
             self._client = None
 
     def _resolve_account_hash(self) -> None:
