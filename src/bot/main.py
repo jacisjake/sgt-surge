@@ -786,14 +786,31 @@ class TradingBot:
             datetime.combine(today_et, dtime(9, 45))
         ).astimezone(timezone.utc)
 
+        # Schwab's pricehistory without explicit dates returns only the
+        # most recent ~20 5-min bars (~95 min). Pass an explicit start/end
+        # so this method works even when fired several hours after 09:45
+        # (e.g., via the admin endpoint after a midday auth recovery).
+        import pandas as pd
         for symbol in symbols:
             try:
-                # Pull enough recent bars to cover the OR window regardless
-                # of when this job actually fires.
-                bars = self.client.get_bars(symbol, timeframe="5Min", limit=20)
-                if bars is None or bars.empty:
+                resp = self.client._client.get_price_history_every_five_minutes(
+                    symbol,
+                    start_datetime=or_start.astimezone(_ET).replace(tzinfo=None),
+                    end_datetime=(or_end + pd.Timedelta(minutes=10))
+                        .astimezone(_ET).replace(tzinfo=None),
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"[OR-LOCK] {symbol}: pricehistory HTTP {resp.status_code}"
+                    )
+                    continue
+                candles = resp.json().get("candles", [])
+                if not candles:
                     logger.warning(f"[OR-LOCK] {symbol}: no bars returned")
                     continue
+                bars = pd.DataFrame(candles)
+                bars["timestamp"] = pd.to_datetime(bars["datetime"], unit="ms", utc=True)
+                bars = bars.set_index("timestamp")[["open", "high", "low", "close", "volume"]]
                 or_bars = bars[(bars.index >= or_start) & (bars.index < or_end)]
                 if or_bars.empty:
                     logger.warning(
