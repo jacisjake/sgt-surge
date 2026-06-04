@@ -302,19 +302,38 @@ class OrderExecutor:
             raise ValueError(f"Unknown order type: {order_type}")
 
     def _wait_for_fill(self, order_id: str) -> OrderResult:
-        """Wait for order to fill or timeout."""
+        """Wait for order to fill or timeout.
+
+        Schwab order statuses (lower-cased): filled, working,
+        pending_activation, queued, awaiting_parent_order, canceled,
+        rejected, expired, replaced. The executor must keep polling on
+        any non-terminal status -- including the "not found yet" window
+        right after submit. Treating None or unknown statuses as terminal
+        causes the bot to abandon orders that Schwab actually fills, as
+        observed on the IOVA trade 2026-06-04.
+        """
         start_time = time.time()
+        consecutive_not_found = 0
 
         while time.time() - start_time < self.FILL_TIMEOUT_SECONDS:
             order = self.client.get_order(order_id)
 
             if order is None:
-                return OrderResult(
-                    success=False,
-                    order_id=order_id,
-                    status=OrderStatus.FAILED,
-                    error="Order not found",
-                )
+                # Eventual-consistency window or stale ID. Keep polling
+                # until the order resolves or the timeout fires. Only
+                # treat as truly missing after enough consecutive misses
+                # that we believe Schwab really doesn't have it.
+                consecutive_not_found += 1
+                if consecutive_not_found >= 20:  # ~10s of misses
+                    return OrderResult(
+                        success=False,
+                        order_id=order_id,
+                        status=OrderStatus.FAILED,
+                        error="Order not found after 10s of polling",
+                    )
+                time.sleep(self.FILL_CHECK_INTERVAL)
+                continue
+            consecutive_not_found = 0
 
             status = order["status"]
 
@@ -326,16 +345,28 @@ class OrderExecutor:
                     filled_qty=order["filled_qty"],
                     filled_price=order.get("price"),
                 )
-            elif status == "partially_filled":
-                # Continue waiting
+            # Non-terminal statuses to keep polling on
+            elif status in {"partially_filled", "working", "pending_activation",
+                            "queued", "awaiting_parent_order", "accepted",
+                            "pending_replace", "pending_cancel"}:
                 pass
-            elif status in ["cancelled", "expired", "rejected"]:
+            # Terminal failure statuses (accept both spellings of "canceled")
+            elif status in {"cancelled", "canceled", "expired", "rejected", "replaced"}:
+                # Normalize "canceled" -> "cancelled" for the enum.
+                mapped = "cancelled" if status in {"cancelled", "canceled"} else status
                 return OrderResult(
                     success=False,
                     order_id=order_id,
-                    status=OrderStatus(status),
+                    status=OrderStatus(mapped),
                     filled_qty=order["filled_qty"],
                     error=f"Order {status}",
+                )
+            else:
+                # Unknown status -- keep polling and log so we can
+                # extend the recognized set if Schwab adds new states.
+                logger.warning(
+                    f"[EXECUTOR] {order_id}: unknown status {status!r}; "
+                    f"continuing to poll"
                 )
 
             time.sleep(self.FILL_CHECK_INTERVAL)

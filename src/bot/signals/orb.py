@@ -90,6 +90,12 @@ class OpeningRangeBreakout(SignalGenerator):
     def reset(self) -> None:
         self.state.clear()
 
+    def should_exit(self, **_kwargs) -> tuple[bool, str]:
+        """ORB has no strategy-driven exit beyond stop/target managed
+        by monitor.py. Stub returns (False, "") so stream_handler's
+        _check_strategy_exit doesn't log AttributeError on every bar."""
+        return False, ""
+
     # SignalGenerator compat -- ORB is event-driven via on_bar, not generate().
     # Accept and ignore extra kwargs (has_catalyst, symbol_trade_count, etc.)
     # that the scanner-driven loop in main.py passes to legacy strategies.

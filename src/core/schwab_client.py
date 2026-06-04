@@ -332,7 +332,33 @@ class SchwabClient:
         return out
 
     def get_order(self, order_id: str) -> Optional[dict]:
-        for o in self.get_orders(status="all"):
-            if o["id"] == order_id:
-                return o
-        return None
+        """Direct single-order lookup via schwab-py's get_order(order_id,
+        account_hash). Avoids the eventual-consistency race in
+        get_orders_for_account, which can omit just-submitted orders for
+        ~1s after place_order returns and used to make the executor's
+        _wait_for_fill bail with 'Order not found' before the order ever
+        appeared in the list."""
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        try:
+            resp = self._client.get_order(order_id, self._account_hash)
+        except Exception as e:
+            logger.warning(f"[SCHWAB] get_order({order_id}) raised: {e}")
+            return None
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"get_order failed: {resp.status_code}")
+        o = resp.json()
+        leg = (o.get("orderLegCollection") or [{}])[0]
+        return {
+            "id": str(o.get("orderId")),
+            "symbol": leg.get("instrument", {}).get("symbol", ""),
+            "qty": float(leg.get("quantity", 0)),
+            "filled_qty": float(o.get("filledQuantity", 0)),
+            "type": str(o.get("orderType", "")).lower(),
+            "status": str(o.get("status", "")).lower(),
+            "price": float(o["price"]) if o.get("price") is not None else None,
+            "stop_price": float(o["stopPrice"]) if o.get("stopPrice") is not None else None,
+            "submitted_at": o.get("enteredTime"),
+        }

@@ -352,6 +352,41 @@ class TradingBot:
                 if not positions:
                     continue
 
+                # Self-heal: drop any in-memory positions Schwab no longer
+                # holds. The executor's _wait_for_fill historically
+                # mis-reported a real fill as "failed", leaving the bot
+                # in a state where it kept retrying the exit every 30s.
+                # Reconciling here means a stale position falls off on
+                # the next poll cycle even if individual exit attempts
+                # keep racing the order-status API.
+                try:
+                    broker_symbols = {
+                        p["symbol"] for p in self.client.get_positions()
+                        if float(p.get("qty", 0)) > 0
+                    }
+                    stale = [p for p in positions if p.symbol not in broker_symbols]
+                    if stale:
+                        for sp in stale:
+                            try:
+                                exit_px = self.client.get_latest_price(sp.symbol)
+                            except Exception:
+                                exit_px = sp.current_price or sp.entry_price
+                            self.position_manager.close_position(
+                                sp.symbol, exit_px, "reconciled (broker closed)"
+                            )
+                            logger.info(
+                                f"[POLL RECONCILE] {sp.symbol}: broker no longer "
+                                f"holds this position; closed in PositionManager "
+                                f"at ${exit_px:.2f}"
+                            )
+                        positions = self.position_manager.get_open_positions()
+                        if not positions:
+                            continue
+                except Exception as recon_err:
+                    logger.warning(
+                        f"[POLL RECONCILE] reconciliation check failed: {recon_err}"
+                    )
+
                 for position in positions:
                     symbol = position.symbol
                     # Skip if we got a recent quote from DXLink (< 60s)
