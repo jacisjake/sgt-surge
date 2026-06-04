@@ -330,6 +330,90 @@ async def admin_lock_or_now() -> dict:
     }
 
 
+@app.post("/admin/sync_positions")
+async def admin_sync_positions() -> dict:
+    """Adopt broker-side positions the bot is unaware of.
+
+    The OrderExecutor has a race where it polls Schwab's order status too
+    fast after submission, gets back "failed", and abandons the fill --
+    even when Schwab actually completed the order. The position lands on
+    the account with no entry in PositionManager and no stop/target,
+    which means the bot won't manage exits OR fire the EOD safety net.
+
+    This endpoint reconciles by pulling broker positions, adding the
+    missing ones to PositionManager using the ORB strategy's OR data for
+    stop, and submitting a hard stop-limit order to Schwab for downside
+    protection.
+
+    Localhost-only via Caddy routing (same as /admin/lock_or_now).
+    """
+    from src.core.position_manager import PositionSide
+    if _bot is None:
+        raise HTTPException(503, "Bot not initialized")
+    broker_positions = _bot.client.get_positions()
+    adopted = []
+    for p in broker_positions:
+        symbol = p["symbol"]
+        qty = float(p["qty"])
+        if qty <= 0:
+            continue
+        if _bot.position_manager.has_position(symbol):
+            continue
+        entry_price = float(p["avg_entry_price"])
+
+        # Derive stop/target from ORB state if we have it; otherwise
+        # fall back to a 5% stop so there's at least *some* protection.
+        or_state = _bot.strategy.state.get(symbol)
+        if or_state and or_state.or_locked and or_state.or_low > 0:
+            stop = or_state.or_low
+            r = max(entry_price - stop, 0.01)
+            target = entry_price + 2 * r
+        else:
+            stop = round(entry_price * 0.95, 2)
+            target = round(entry_price * 1.10, 2)
+
+        position = _bot.position_manager.add_position(
+            symbol=symbol,
+            side=PositionSide.LONG,
+            qty=qty,
+            entry_price=entry_price,
+            stop_loss=stop,
+            take_profit=target,
+            strategy="orb",
+        )
+
+        # Submit a hard stop-limit at the broker so the position has real
+        # downside protection independent of the bot process. Limit price
+        # is 1% below stop trigger to favor execution over slippage on
+        # illiquid penny names.
+        broker_stop_id = None
+        try:
+            broker_stop_id = _bot.client.submit_stop_limit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                stop_price=round(stop, 2),
+                limit_price=round(stop * 0.99, 2),
+            )
+            position.broker_stop_order_id = broker_stop_id
+        except Exception as e:
+            logger.error(
+                f"[SYNC] {symbol}: stop-limit submission failed: {e}. "
+                f"Position adopted in PositionManager but no broker stop is active."
+            )
+
+        adopted.append({
+            "symbol": symbol,
+            "qty": qty,
+            "entry_price": entry_price,
+            "stop_loss": stop,
+            "take_profit": target,
+            "broker_stop_order_id": broker_stop_id,
+        })
+
+    return {"adopted": adopted, "open_positions": len(_bot.position_manager.get_open_positions())}
+
+
 @app.get("/api/scanner")
 async def scanner() -> list[dict]:
     if _bot is None:
