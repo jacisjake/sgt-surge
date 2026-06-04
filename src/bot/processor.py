@@ -231,10 +231,14 @@ class SignalProcessor:
             if signal.risk_reward_ratio < self.config.min_risk_reward - 0.01:
                 return f"R:R too low: {signal.risk_reward_ratio:.2f} < {self.config.min_risk_reward}"
 
-        # Check risk percent isn't too high
-        # 7% max stop width — tight enough to protect the small account,
-        # loose enough not to reject too many valid momentum setups
-        max_stop_pct = 0.07
+        # Check risk percent isn't too high.
+        # 15% max stop width: 7% rejected every ORB signal observed in the
+        # 2026-06-02..06-04 window (sub-dollar gappers naturally produce
+        # 20-50% stop distance as a fraction of entry). A 3-day sweep of
+        # 7/10/15/25/50% showed 10-15% captures most of the upside without
+        # admitting parabolic-top entries that wouldn't size meaningfully
+        # against MAX_POSITION_RISK_PCT anyway. See scripts/backtest_orb.py.
+        max_stop_pct = 0.15
         risk_pct = signal.risk_amount / signal.entry_price
         if risk_pct > max_stop_pct:
             return f"Stop too wide: {risk_pct:.1%} risk (max {max_stop_pct:.0%})"
