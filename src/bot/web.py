@@ -414,6 +414,44 @@ async def admin_sync_positions() -> dict:
     return {"adopted": adopted, "open_positions": len(_bot.position_manager.get_open_positions())}
 
 
+@app.post("/admin/close_stale_positions")
+async def admin_close_stale_positions() -> dict:
+    """Reconcile PositionManager against the broker: anything we still
+    think is open but Schwab no longer holds gets marked closed at the
+    current quote with reason='reconciled (broker closed)'.
+
+    Needed because the OrderExecutor races on order-status polling for
+    EXITS too: TP hits, sell submitted, polled too fast, sees "failed",
+    PositionManager never gets close_position called -- so the poll
+    loop keeps re-detecting the TP and spamming sell retries to Schwab.
+    """
+    if _bot is None:
+        raise HTTPException(503, "Bot not initialized")
+    broker_positions = _bot.client.get_positions()
+    broker_symbols = {
+        p["symbol"] for p in broker_positions if float(p.get("qty", 0)) > 0
+    }
+    closed = []
+    for position in list(_bot.position_manager.get_open_positions()):
+        if position.symbol in broker_symbols:
+            continue
+        try:
+            exit_price = _bot.client.get_latest_price(position.symbol)
+        except Exception:
+            exit_price = position.current_price or position.entry_price
+        _bot.position_manager.close_position(
+            position.symbol, exit_price, "reconciled (broker closed)"
+        )
+        closed.append({
+            "symbol": position.symbol,
+            "exit_price": exit_price,
+        })
+    return {
+        "closed": closed,
+        "open_positions_remaining": len(_bot.position_manager.get_open_positions()),
+    }
+
+
 @app.get("/api/scanner")
 async def scanner() -> list[dict]:
     if _bot is None:
