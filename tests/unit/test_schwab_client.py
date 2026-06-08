@@ -262,6 +262,84 @@ def test_get_orders_normalizes(schwab, mock_schwab_py_client):
     assert orders[0]["stop_price"] == 9.95
 
 
+def test_get_order_market_fill_price_from_execution_legs(schwab, mock_schwab_py_client):
+    # A filled MARKET order has no top-level "price"; the average fill price
+    # lives in orderActivityCollection[].executionLegs[]. get_order must
+    # surface a volume-weighted average so exits don't close at price=None.
+    mock_schwab_py_client.get_order.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "orderId": 9876,
+            "status": "FILLED",
+            "filledQuantity": 10,
+            "orderType": "MARKET",
+            "price": None,
+            "stopPrice": None,
+            "orderLegCollection": [{"instrument": {"symbol": "AAPL"}, "quantity": 10}],
+            "enteredTime": "2026-06-04T13:30:00+0000",
+            "orderActivityCollection": [
+                {
+                    "activityType": "EXECUTION",
+                    "executionType": "FILL",
+                    "quantity": 10,
+                    "executionLegs": [
+                        {"legId": 1, "quantity": 6, "price": 10.00},
+                        {"legId": 1, "quantity": 4, "price": 10.50},
+                    ],
+                }
+            ],
+        },
+    )
+
+    order = schwab.get_order("9876")
+    # VWAP = (6*10.00 + 4*10.50) / 10 = 10.20
+    assert order["price"] == pytest.approx(10.20)
+
+
+def test_get_order_limit_price_not_overridden_by_execution_legs(schwab, mock_schwab_py_client):
+    # When Schwab already reports a top-level price (limit orders), keep it.
+    mock_schwab_py_client.get_order.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "orderId": 4321,
+            "status": "FILLED",
+            "filledQuantity": 5,
+            "orderType": "LIMIT",
+            "price": 9.95,
+            "stopPrice": None,
+            "orderLegCollection": [{"instrument": {"symbol": "AAPL"}, "quantity": 5}],
+            "enteredTime": "2026-06-04T13:31:00+0000",
+            "orderActivityCollection": [
+                {"executionLegs": [{"quantity": 5, "price": 9.80}]}
+            ],
+        },
+    )
+
+    order = schwab.get_order("4321")
+    assert order["price"] == pytest.approx(9.95)
+
+
+def test_get_order_no_executions_leaves_price_none(schwab, mock_schwab_py_client):
+    # A working market order with no fills yet has no executions: price stays None.
+    mock_schwab_py_client.get_order.return_value = MagicMock(
+        status_code=200,
+        json=lambda: {
+            "orderId": 5555,
+            "status": "WORKING",
+            "filledQuantity": 0,
+            "orderType": "MARKET",
+            "price": None,
+            "stopPrice": None,
+            "orderLegCollection": [{"instrument": {"symbol": "AAPL"}, "quantity": 10}],
+            "enteredTime": "2026-06-04T13:32:00+0000",
+            "orderActivityCollection": [],
+        },
+    )
+
+    order = schwab.get_order("5555")
+    assert order["price"] is None
+
+
 def test_get_orders_status_all(schwab, mock_schwab_py_client):
     mock_schwab_py_client.get_orders_for_account.return_value = MagicMock(
         status_code=200,

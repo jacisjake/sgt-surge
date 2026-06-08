@@ -38,6 +38,28 @@ except ImportError:  # pragma: no cover — surfaced at install time
     _OrderBuilder = _Duration = _Session = _OrderType = _EquityInstruction = None
 
 
+def _avg_fill_price(order: dict) -> Optional[float]:
+    """Volume-weighted average fill price across an order's execution legs.
+
+    Schwab reports per-fill prices in orderActivityCollection[].executionLegs[]
+    rather than a single top-level price for market orders. Returns None when
+    nothing has executed yet.
+    """
+    total_qty = 0.0
+    total_notional = 0.0
+    for activity in order.get("orderActivityCollection") or []:
+        for leg in activity.get("executionLegs") or []:
+            qty = float(leg.get("quantity", 0) or 0)
+            price = leg.get("price")
+            if qty <= 0 or price is None:
+                continue
+            total_qty += qty
+            total_notional += qty * float(price)
+    if total_qty <= 0:
+        return None
+    return total_notional / total_qty
+
+
 class SchwabClient:
     _TIMEFRAME_TO_METHOD = {
         "1Min": "get_price_history_every_minute",
@@ -351,6 +373,10 @@ class SchwabClient:
             raise RuntimeError(f"get_order failed: {resp.status_code}")
         o = resp.json()
         leg = (o.get("orderLegCollection") or [{}])[0]
+        # Market orders carry no top-level "price"; the average fill lives in
+        # the execution legs. Fall back to the volume-weighted average so
+        # downstream exit/P&L logic never closes a position at price=None.
+        price = float(o["price"]) if o.get("price") is not None else _avg_fill_price(o)
         return {
             "id": str(o.get("orderId")),
             "symbol": leg.get("instrument", {}).get("symbol", ""),
@@ -358,7 +384,7 @@ class SchwabClient:
             "filled_qty": float(o.get("filledQuantity", 0)),
             "type": str(o.get("orderType", "")).lower(),
             "status": str(o.get("status", "")).lower(),
-            "price": float(o["price"]) if o.get("price") is not None else None,
+            "price": price,
             "stop_price": float(o["stopPrice"]) if o.get("stopPrice") is not None else None,
             "submitted_at": o.get("enteredTime"),
         }
