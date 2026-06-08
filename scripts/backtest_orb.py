@@ -55,6 +55,7 @@ TARGET_R = 2.0
 ATR_PERIOD = 14
 CHANDELIER_MULT = 3.0
 HISTORY_DIR = PROJECT / "state" / "orb_history"
+MAX_STOP_PCT: Optional[float] = None  # set by --max-stop-pct
 
 
 @dataclass
@@ -206,13 +207,23 @@ def backtest_one(client: SchwabClient, symbol: str, target_date: Optional[date])
             result.entry_price = signal.entry_price
             stop = signal.stop_price
             target = signal.target_price
+            r = signal.entry_price - stop
+
+            # Apply the processor.py max-stop-pct gate if configured.
+            if MAX_STOP_PCT is not None and signal.entry_price > 0:
+                risk_pct = r / signal.entry_price
+                if risk_pct > MAX_STOP_PCT:
+                    result.exit_reason = f"rejected({risk_pct:.1%})"
+                    result.r_multiple = 0.0
+                    result.pnl_per_share = 0.0
+                    return result, used_date
+
             exit_ts, exit_px, reason = simulate_exit(
                 trade_df, ts, signal.entry_price, stop, target
             )
             result.exit_time = exit_ts
             result.exit_price = exit_px
             result.exit_reason = reason
-            r = signal.entry_price - stop
             result.r_multiple = (exit_px - signal.entry_price) / r if r else 0.0
             result.pnl_per_share = exit_px - signal.entry_price
             return result, used_date
@@ -303,9 +314,16 @@ def main() -> int:
     parser.add_argument("--date", type=str, default=None, help="Single YYYY-MM-DD (ET)")
     parser.add_argument("--last", type=int, default=None,
                         help="Run over last N history-file dates and aggregate")
+    parser.add_argument("--max-stop-pct", type=float, default=None,
+                        help="Apply processor.py-style max-risk gate (e.g. 0.07 = 7%%). "
+                             "Signals whose risk_amount/entry_price exceeds this are "
+                             "treated as 'rejected' and contribute 0R, mirroring what "
+                             "happens to the live signal in stream_handler.")
     parser.add_argument("symbols", nargs="*",
                         help="Explicit symbols; otherwise loaded from history or /sgt/api/orb")
     args = parser.parse_args()
+    global MAX_STOP_PCT
+    MAX_STOP_PCT = args.max_stop_pct
 
     cfg = get_bot_config()
     client = SchwabClient(
