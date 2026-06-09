@@ -634,6 +634,39 @@ class StreamHandler:
         """Set daily trade count (for sync with TradingBot)."""
         self._daily_trades_today = value
 
+    def get_close_series(self) -> dict[str, list[float]]:
+        """Closing prices of the buffered 5-min bars, per symbol.
+
+        Lightweight feed for the dashboard's sparkline column — closes only,
+        skipping symbols whose buffer is still empty.
+        """
+        return {
+            s: [float(c) for c in df["close"].tolist()]
+            for s, df in self._five_min_bars.items()
+            if df is not None and not df.empty
+        }
+
+    def get_ohlcv(self, symbol: str) -> list[dict]:
+        """Full OHLCV of the buffered 5-min bars for one symbol.
+
+        Feeds the dashboard's detail popup. Returns [] when nothing is
+        buffered yet for the symbol.
+        """
+        df = self._five_min_bars.get(symbol)
+        if df is None or df.empty:
+            return []
+        out = []
+        for ts, row in df.iterrows():
+            out.append({
+                "t": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "o": float(row["open"]),
+                "h": float(row["high"]),
+                "l": float(row["low"]),
+                "c": float(row["close"]),
+                "v": float(row["volume"]),
+            })
+        return out
+
     def get_status(self) -> dict:
         """Get stream handler status."""
         return {

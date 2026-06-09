@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -54,6 +55,23 @@ _DASHBOARD_HTML = """\
     .warn { color: #d29922; }
     .err { color: #f85149; }
     button { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover td { background: #1c2230; }
+    .spark { display: block; }
+    /* modal */
+    .overlay { position: fixed; inset: 0; background: rgba(1,4,9,0.75); display: none;
+               align-items: center; justify-content: center; z-index: 50; }
+    .overlay.open { display: flex; }
+    .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+             padding: 16px; width: 640px; max-width: calc(100vw - 32px); }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .modal-title { font-size: 15px; }
+    .modal-sub { color: #8b949e; font-size: 12px; margin-left: 10px; }
+    .toggle { display: inline-flex; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+    .toggle button { background: #21262d; color: #c9d1d9; border: none; padding: 5px 12px;
+                     border-radius: 0; font-size: 12px; }
+    .toggle button.active { background: #1f6feb; color: white; }
+    .close-x { background: none; color: #8b949e; padding: 4px 8px; font-size: 16px; }
   </style>
 </head>
 <body>
@@ -73,7 +91,7 @@ _DASHBOARD_HTML = """\
   <div class="panel">
     <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">ORB state</h2>
     <table id="orb-table"><thead><tr>
-      <th>Symbol</th><th>OR High</th><th>OR Low</th><th>OR Vol</th><th>Locked</th><th>Fired</th>
+      <th>Symbol</th><th>OR High</th><th>OR Low</th><th>OR Vol</th><th>Locked</th><th>Fired</th><th>Price</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -84,28 +102,213 @@ _DASHBOARD_HTML = """\
     </tr></thead><tbody></tbody></table>
   </div>
 
+  <div id="overlay" class="overlay">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <span id="m-title" class="modal-title"></span>
+          <span id="m-sub" class="modal-sub"></span>
+        </div>
+        <div>
+          <span class="toggle">
+            <button id="t-line" class="active">Line</button>
+            <button id="t-candles">Candles</button>
+          </span>
+          <button id="m-close" class="close-x">&times;</button>
+        </div>
+      </div>
+      <div id="m-chart"></div>
+    </div>
+  </div>
+
 <script>
+const SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(name, attrs) {
+  const el = document.createElementNS(SVGNS, name);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
 function setText(id, value, cls) {
   const el = document.getElementById(id);
   el.textContent = value;
   if (cls !== undefined) el.className = cls;
 }
 
-function makeCell(text, cls) {
+function makeCell(c) {
   const td = document.createElement('td');
-  td.textContent = text;
-  if (cls) td.className = cls;
+  if (c.node) td.appendChild(c.node);
+  else td.textContent = c.text;
+  if (c.cls) td.className = c.cls;
   return td;
 }
 
 function renderTable(tbodySelector, rows) {
   const tbody = document.querySelector(tbodySelector);
   while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-  for (const cells of rows) {
+  for (const row of rows) {
+    const cells = row.cells || row;
     const tr = document.createElement('tr');
-    for (const c of cells) tr.appendChild(makeCell(c.text, c.cls));
+    for (const c of cells) tr.appendChild(makeCell(c));
+    if (row.onClick) {
+      tr.className = 'clickable';
+      tr.addEventListener('click', row.onClick);
+    }
     tbody.appendChild(tr);
   }
+}
+
+function sparkline(closes, orHigh, orLow) {
+  const w = 120, h = 28;
+  const svg = svgEl('svg', {width: w, height: h, class: 'spark', viewBox: '0 0 ' + w + ' ' + h});
+  if (!closes || closes.length < 2) {
+    const t = svgEl('text', {x: 2, y: h - 9, fill: '#8b949e', 'font-size': 11});
+    t.textContent = '—';
+    svg.appendChild(t);
+    return svg;
+  }
+  let lo = Math.min.apply(null, closes), hi = Math.max.apply(null, closes);
+  if (orHigh != null) hi = Math.max(hi, orHigh);
+  if (orLow != null) lo = Math.min(lo, orLow);
+  const pad = 3, span = (hi - lo) || 1;
+  const x = i => pad + i * (w - 2 * pad) / (closes.length - 1);
+  const y = v => pad + (hi - v) * (h - 2 * pad) / span;
+  if (orHigh != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orHigh), y2: y(orHigh),
+      stroke: '#d29922', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.6}));
+  if (orLow != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orLow), y2: y(orLow),
+      stroke: '#8b949e', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.4}));
+  const up = closes[closes.length - 1] >= closes[0];
+  svg.appendChild(svgEl('polyline', {points: closes.map((c, i) => x(i) + ',' + y(c)).join(' '),
+      fill: 'none', stroke: up ? '#3fb950' : '#f85149', 'stroke-width': 1.2}));
+  return svg;
+}
+
+// ── Detail modal ──────────────────────────────────────────────────────
+let mSymbol = null, mData = null, mTimer = null;
+let mMode = localStorage.getItem('chartMode') || 'line';
+
+function chartScales(d, W, H) {
+  const bars = d.bars || [];
+  const m = {l: 48, r: 12, t: 12, b: 18};
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); }
+  if (d.or_high != null) hi = Math.max(hi, d.or_high);
+  if (d.or_low != null) lo = Math.min(lo, d.or_low);
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  const span = (hi - lo) || 1, n = bars.length;
+  return {bars, m, iw, ih, lo, hi, n,
+    x: i => m.l + (n <= 1 ? iw / 2 : i * iw / (n - 1)),
+    y: v => m.t + (hi - v) * ih / span};
+}
+
+function axisAndOR(svg, s, d) {
+  [s.lo, (s.lo + s.hi) / 2, s.hi].forEach(function (v) {
+    svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: s.y(v), y2: s.y(v),
+        stroke: '#21262d', 'stroke-width': 0.5}));
+    const t = svgEl('text', {x: 4, y: s.y(v) + 3, fill: '#8b949e', 'font-size': 10});
+    t.textContent = '$' + v.toFixed(2);
+    svg.appendChild(t);
+  });
+  function orLine(v, color, label, dy) {
+    svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: s.y(v), y2: s.y(v),
+        stroke: color, 'stroke-width': 1, 'stroke-dasharray': '4 3'}));
+    const t = svgEl('text', {x: s.m.l + s.iw - 2, y: s.y(v) + dy, fill: color,
+        'font-size': 10, 'text-anchor': 'end'});
+    t.textContent = label;
+    svg.appendChild(t);
+  }
+  if (d.or_high != null) orLine(d.or_high, '#d29922', 'OR high', -3);
+  if (d.or_low != null) orLine(d.or_low, '#8b949e', 'OR low', 11);
+}
+
+function lineChart(d) {
+  const W = 600, H = 300;
+  const svg = svgEl('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H});
+  const s = chartScales(d, W, H);
+  axisAndOR(svg, s, d);
+  if (s.n >= 2) {
+    const up = s.bars[s.n - 1].c >= s.bars[0].c;
+    svg.appendChild(svgEl('polyline', {points: s.bars.map((b, i) => s.x(i) + ',' + s.y(b.c)).join(' '),
+        fill: 'none', stroke: up ? '#3fb950' : '#f85149', 'stroke-width': 1.5}));
+    const last = s.bars[s.n - 1];
+    svg.appendChild(svgEl('circle', {cx: s.x(s.n - 1), cy: s.y(last.c), r: 3, fill: up ? '#3fb950' : '#f85149'}));
+  } else {
+    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#8b949e', 'font-size': 12, 'text-anchor': 'middle'});
+    t.textContent = 'no bars buffered yet';
+    svg.appendChild(t);
+  }
+  return svg;
+}
+
+function candleChart(d) {
+  const W = 600, H = 300, volH = 46;
+  const svg = svgEl('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H});
+  const s = chartScales(d, W, H - volH);
+  axisAndOR(svg, s, d);
+  const n = s.n, bw = Math.max(2, (s.iw / Math.max(n, 1)) * 0.6);
+  const xc = i => s.m.l + (i + 0.5) * s.iw / Math.max(n, 1);
+  let maxV = 0;
+  for (const b of s.bars) maxV = Math.max(maxV, b.v || 0);
+  maxV = maxV || 1;
+  const vy = v => H - (v / maxV) * (volH - 4);
+  for (let i = 0; i < n; i++) {
+    const b = s.bars[i], up = b.c >= b.o, col = up ? '#3fb950' : '#f85149';
+    svg.appendChild(svgEl('line', {x1: xc(i), x2: xc(i), y1: s.y(b.h), y2: s.y(b.l), stroke: col, 'stroke-width': 1}));
+    const top = Math.min(s.y(b.o), s.y(b.c)), hgt = Math.max(1, Math.abs(s.y(b.c) - s.y(b.o)));
+    svg.appendChild(svgEl('rect', {x: xc(i) - bw / 2, y: top, width: bw, height: hgt, fill: col}));
+    svg.appendChild(svgEl('rect', {x: xc(i) - bw / 2, y: vy(b.v || 0), width: bw, height: H - vy(b.v || 0),
+        fill: col, opacity: 0.5}));
+  }
+  svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: H - volH, y2: H - volH,
+      stroke: '#30363d', 'stroke-width': 0.5}));
+  if (n === 0) {
+    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#8b949e', 'font-size': 12, 'text-anchor': 'middle'});
+    t.textContent = 'no bars buffered yet';
+    svg.appendChild(t);
+  }
+  return svg;
+}
+
+function drawDetail() {
+  if (!mData) return;
+  const host = document.getElementById('m-chart');
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.appendChild(mMode === 'candles' ? candleChart(mData) : lineChart(mData));
+}
+
+function setMode(mode) {
+  mMode = mode;
+  localStorage.setItem('chartMode', mode);
+  document.getElementById('t-line').className = mode === 'line' ? 'active' : '';
+  document.getElementById('t-candles').className = mode === 'candles' ? 'active' : '';
+  drawDetail();
+}
+
+async function loadDetail() {
+  if (!mSymbol) return;
+  mData = await (await fetch('/sgt/api/bars?symbol=' + encodeURIComponent(mSymbol))).json();
+  document.getElementById('m-title').textContent = mSymbol;
+  const band = (mData.or_low != null ? '$' + mData.or_low.toFixed(2) : '-')
+             + ' – ' + (mData.or_high != null ? '$' + mData.or_high.toFixed(2) : '-');
+  document.getElementById('m-sub').textContent = 'OR ' + band
+    + (mData.current != null ? '  ·  cur $' + mData.current.toFixed(2) : '')
+    + (mData.fired ? '  ·  BREAKOUT' : '');
+  drawDetail();
+}
+
+async function openModal(sym) {
+  mSymbol = sym;
+  document.getElementById('overlay').classList.add('open');
+  setMode(mMode);
+  await loadDetail();
+  if (mTimer) clearInterval(mTimer);
+  mTimer = setInterval(loadDetail, 2000);
+}
+
+function closeModal() {
+  document.getElementById('overlay').classList.remove('open');
+  mSymbol = null;
+  if (mTimer) { clearInterval(mTimer); mTimer = null; }
 }
 
 async function refresh() {
@@ -128,16 +331,22 @@ async function refresh() {
   }
 
   const orb = await (await fetch('/sgt/api/orb')).json();
+  const bars = await (await fetch('/sgt/api/bars')).json();
   const orbRows = Object.entries(orb).map(function (entry) {
     const sym = entry[0]; const st = entry[1];
-    return [
-      {text: sym},
-      {text: '$' + st.or_high.toFixed(2)},
-      {text: '$' + st.or_low.toFixed(2)},
-      {text: st.or_volume.toLocaleString()},
-      {text: st.or_locked ? 'YES' : 'no', cls: st.or_locked ? 'ok' : 'warn'},
-      {text: st.breakout_fired ? 'YES' : 'no', cls: st.breakout_fired ? 'ok' : ''},
-    ];
+    const b = bars[sym] || {};
+    return {
+      cells: [
+        {text: sym},
+        {text: '$' + st.or_high.toFixed(2)},
+        {text: '$' + st.or_low.toFixed(2)},
+        {text: st.or_volume.toLocaleString()},
+        {text: st.or_locked ? 'YES' : 'no', cls: st.or_locked ? 'ok' : 'warn'},
+        {text: st.breakout_fired ? 'YES' : 'no', cls: st.breakout_fired ? 'ok' : ''},
+        {node: sparkline(b.closes, st.or_high, st.or_low)},
+      ],
+      onClick: function () { openModal(sym); },
+    };
   });
   renderTable('#orb-table tbody', orbRows);
 
@@ -158,6 +367,14 @@ async function refresh() {
 document.getElementById('oauth-btn').addEventListener('click', function () {
   window.location = '/schwab/oauth/start';
 });
+
+document.getElementById('t-line').addEventListener('click', function () { setMode('line'); });
+document.getElementById('t-candles').addEventListener('click', function () { setMode('candles'); });
+document.getElementById('m-close').addEventListener('click', closeModal);
+document.getElementById('overlay').addEventListener('click', function (e) {
+  if (e.target.id === 'overlay') closeModal();
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 
 refresh();
 setInterval(refresh, 2000);
@@ -295,6 +512,45 @@ async def orb_state() -> dict:
         }
         for sym, st in _bot.strategy.state.items()
     }
+
+
+@app.get("/api/bars")
+async def bars(symbol: Optional[str] = None) -> dict:
+    """Buffered 5-min bars for the dashboard charts.
+
+    Without ?symbol, returns a lightweight per-symbol close series (keyed by
+    the ORB watch list) for the sparkline column. With ?symbol, returns the
+    full OHLCV series for that one symbol for the detail popup. OR-band and
+    breakout flags are merged in from strategy state.
+    """
+    if _bot is None:
+        return {}
+    state = _bot.strategy.state
+
+    if symbol is not None:
+        st = state.get(symbol)
+        bars = _bot.stream_handler.get_ohlcv(symbol)
+        return {
+            "symbol": symbol,
+            "bars": bars,
+            "or_high": st.or_high if st else None,
+            "or_low": st.or_low if st else None,
+            "fired": st.breakout_fired if st else False,
+            "current": bars[-1]["c"] if bars else None,
+        }
+
+    series = _bot.stream_handler.get_close_series()
+    out = {}
+    for sym, st in state.items():
+        closes = series.get(sym, [])
+        out[sym] = {
+            "closes": closes,
+            "or_high": st.or_high,
+            "or_low": st.or_low,
+            "fired": st.breakout_fired,
+            "current": closes[-1] if closes else None,
+        }
+    return out
 
 
 @app.get("/api/positions")
