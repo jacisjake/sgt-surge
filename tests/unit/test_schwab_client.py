@@ -349,3 +349,23 @@ def test_get_orders_status_all(schwab, mock_schwab_py_client):
                        "enteredTime": "2026-05-08T13:30:00+0000"}],
     )
     assert len(schwab.get_orders(status="all")) == 1
+
+
+def test_get_history_passes_dates_and_normalizes(schwab, mock_schwab_py_client):
+    from datetime import datetime
+    candles = [
+        {"datetime": 1715170200000, "open": 10.0, "high": 10.5, "low": 9.9, "close": 10.4, "volume": 1000},
+        {"datetime": 1715170500000, "open": 10.4, "high": 10.7, "low": 10.3, "close": 10.6, "volume": 1500},
+    ]
+    mock_schwab_py_client.get_price_history_every_five_minutes.return_value = MagicMock(
+        status_code=200, json=lambda: {"candles": candles, "empty": False},
+    )
+    start = datetime(2026, 5, 8); end = datetime(2026, 5, 9)
+    df = schwab.get_history("AAPL", "5Min", start, end, extended_hours=True)
+
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert len(df) == 2 and df["close"].iloc[-1] == 10.6
+    _, kwargs = mock_schwab_py_client.get_price_history_every_five_minutes.call_args
+    assert kwargs["start_datetime"] == start
+    assert kwargs["end_datetime"] == end
+    assert kwargs["need_extended_hours_data"] is True

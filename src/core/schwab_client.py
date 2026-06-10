@@ -222,6 +222,31 @@ class SchwabClient:
         df = df.set_index("timestamp")[["open", "high", "low", "close", "volume"]]
         return df.tail(limit)
 
+    def get_history(self, symbol, timeframe="5Min", start=None, end=None,
+                    extended_hours=False):
+        """Date-ranged price history (daily or intraday) for backtests.
+
+        Unlike get_bars (which fetches the API default window and tails it),
+        this passes explicit start/end datetimes and optional pre/post-market
+        bars. Returns the same normalized OHLCV frame.
+        """
+        if not self.is_authenticated:
+            raise RuntimeError("SchwabClient not authenticated")
+        method_name = self._TIMEFRAME_TO_METHOD.get(timeframe)
+        if not method_name:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+        method = getattr(self._client, method_name)
+        resp = method(symbol, start_datetime=start, end_datetime=end,
+                      need_extended_hours_data=extended_hours)
+        if resp.status_code != httpx.codes.OK:
+            raise RuntimeError(f"pricehistory failed: {resp.status_code}")
+        candles = resp.json().get("candles", [])
+        if not candles:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        df = pd.DataFrame(candles)
+        df["timestamp"] = pd.to_datetime(df["datetime"], unit="ms", utc=True)
+        return df.set_index("timestamp")[["open", "high", "low", "close", "volume"]]
+
     def get_latest_price(self, symbol: str) -> float:
         if not self.is_authenticated:
             raise RuntimeError("SchwabClient not authenticated")
