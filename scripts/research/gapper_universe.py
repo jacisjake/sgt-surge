@@ -8,6 +8,7 @@ this across a date range via SchwabClient.get_history daily bars.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Optional
 
 DEFAULT_PARAMS = {
     "gap_min": 0.20,
@@ -72,3 +73,42 @@ def reconstruct(client, symbols, start: date, end: date, params=None) -> dict:
             }
 
     return {d: rank_day(rows, params) for d, rows in sorted(by_date.items())}
+
+
+def compute_levels(daily_df, day: date, swing_lookback: int = 10) -> Optional[dict]:
+    """Compute prior-day and swing levels relative to *day*.
+
+    daily_df: DataFrame with a tz-aware DatetimeIndex and high/low columns.
+    day: the trading date we want levels *for* (not included in the calculation).
+    Returns {"prev_high", "prev_low", "swing_high", "swing_low"} or None when
+    there is no prior trading day in daily_df.
+    """
+    dates = [ts.date() for ts in daily_df.index]
+    # find index of the last row whose date is strictly before day
+    prior_idx = None
+    for i, d in enumerate(dates):
+        if d < day:
+            prior_idx = i
+    if prior_idx is None:
+        return None
+
+    prev_row = daily_df.iloc[prior_idx]
+    prev_high = float(prev_row["high"])
+    prev_low = float(prev_row["low"])
+
+    # swing window: up to swing_lookback rows BEFORE prior_idx
+    swing_start = max(0, prior_idx - swing_lookback)
+    swing_df = daily_df.iloc[swing_start:prior_idx]
+    if swing_df.empty:
+        swing_high = prev_high
+        swing_low = prev_low
+    else:
+        swing_high = float(swing_df["high"].max())
+        swing_low = float(swing_df["low"].min())
+
+    return {
+        "prev_high": prev_high,
+        "prev_low": prev_low,
+        "swing_high": swing_high,
+        "swing_low": swing_low,
+    }
