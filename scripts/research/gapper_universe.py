@@ -112,3 +112,22 @@ def compute_levels(daily_df, day: date, swing_lookback: int = 10) -> Optional[di
         "swing_high": swing_high,
         "swing_low": swing_low,
     }
+
+
+def reconstruct_flat(client, symbols, start: date, end: date) -> dict:
+    """Universe for rangy (non-gapping) backtests: every symbol on every day it
+    traded in [start, end], with NO gap/price/volume filter.
+
+    For ETFs / large-caps where mean-reversion-to-prior-range setups (e.g. Sneaky
+    Pivot) actually apply, since those instruments oscillate around the prior-day
+    levels instead of gapping away from them.
+    """
+    out: dict[str, list[str]] = {}
+    for sym in symbols:
+        df = client.get_history(sym, "1Day", start, end)
+        for ts in df.index:
+            d = ts.date()
+            if d < start or d > end:
+                continue
+            out.setdefault(d.isoformat(), []).append(sym)
+    return {d: out[d] for d in sorted(out)}

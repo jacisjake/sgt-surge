@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.research.gapper_universe import DEFAULT_PARAMS, compute_levels, reconstruct
+from scripts.research.gapper_universe import (
+    DEFAULT_PARAMS, compute_levels, reconstruct, reconstruct_flat,
+)
 from scripts.research.indicators_ctx import build_context
 from scripts.research.metrics import summarize
 from scripts.research.setups.first_pullback import FirstPullback
@@ -55,8 +57,12 @@ def _cached_5min(client, symbol: str, day: date, extended: bool) -> pd.DataFrame
     return df
 
 
-def run(client, symbols, start: date, end: date, params, slip_bps: float) -> list[dict]:
-    universe = reconstruct(client, symbols, start, end, params)
+def run(client, symbols, start: date, end: date, params, slip_bps: float,
+        mode: str = "gappers") -> list[dict]:
+    if mode == "rangy":
+        universe = reconstruct_flat(client, symbols, start, end)
+    else:
+        universe = reconstruct(client, symbols, start, end, params)
     # fetch daily bars once per symbol to compute prior-day/swing levels
     daily_cache: dict[str, pd.DataFrame] = {}
     for sym in symbols:
@@ -101,6 +107,9 @@ def main(argv=None) -> int:
     p.add_argument("--gap-min", type=float, default=DEFAULT_PARAMS["gap_min"])
     p.add_argument("--top-n", type=int, default=DEFAULT_PARAMS["top_n"])
     p.add_argument("--n-min", type=int, default=30)
+    p.add_argument("--universe-mode", choices=["gappers", "rangy"], default="gappers",
+                   help="'gappers': gap-up reconstruction; 'rangy': every symbol "
+                        "every day, no gap/price filter (for ETFs/large-caps)")
     args = p.parse_args(argv)
 
     from src.bot.config import get_bot_config
@@ -115,7 +124,7 @@ def main(argv=None) -> int:
     params = {**DEFAULT_PARAMS, "gap_min": args.gap_min, "top_n": args.top_n,
               "n_min": args.n_min}
     run(client, symbols, date.fromisoformat(args.start), date.fromisoformat(args.end),
-        params, args.slip_bps)
+        params, args.slip_bps, mode=args.universe_mode)
     return 0
 
 

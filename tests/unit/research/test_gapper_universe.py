@@ -90,3 +90,20 @@ def test_compute_levels_swing_fallback_to_prev():
     lvl = compute_levels(df, datetime.date(2026, 1, 5))
     assert lvl["swing_high"] == 8.0  # fallback to prev_high
     assert lvl["swing_low"] == 3.0   # fallback to prev_low
+
+
+def test_reconstruct_flat_includes_every_symbol_each_trading_day():
+    import pandas as pd
+    from datetime import date
+    from scripts.research.gapper_universe import reconstruct_flat
+
+    class FakeClient:
+        def get_history(self, sym, tf, start, end):
+            idx = pd.to_datetime(["2026-03-02T00:00:00Z", "2026-03-03T00:00:00Z",
+                                  "2026-03-04T00:00:00Z"])
+            return pd.DataFrame({"open": [1, 1, 1], "high": [1, 1, 1], "low": [1, 1, 1],
+                                 "close": [1, 1, 1], "volume": [1, 1, 1]}, index=idx)
+
+    uni = reconstruct_flat(FakeClient(), ["SPY", "QQQ"], date(2026, 3, 2), date(2026, 3, 4))
+    assert set(uni.keys()) == {"2026-03-02", "2026-03-03", "2026-03-04"}
+    assert uni["2026-03-02"] == ["SPY", "QQQ"]
