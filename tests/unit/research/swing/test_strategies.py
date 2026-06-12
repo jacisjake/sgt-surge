@@ -867,3 +867,163 @@ def test_index_rsi2_trades_no_setup():
 
     trades = index_rsi2_trades(df, "FLAT", ma=5, rsi_buy=10.0, rsi_sell=70.0)
     assert trades == []
+
+
+# ---------------------------------------------------------------------------
+# turn_of_month_trades
+# ---------------------------------------------------------------------------
+#
+# Strategy: enter at close of the last trading day of each month, hold `hold`
+# bars, with a hard stop.
+#
+# Frame design (hold=4, stop_pct=0.08):
+#   Build a frame that spans two distinct month-ends.
+#   Month 1: Jan 2025 — last business day = Jan 31 (index day)
+#   Month 2: Feb 2025 — last business day = Feb 28 (index day)
+#
+# We construct an explicit DatetimeIndex with at least 2 month-end days and
+# enough trailing rows for hold+1 exits.
+
+
+def _make_turn_of_month_df(trigger_stop: bool = False) -> pd.DataFrame:
+    """Frame spanning Jan + Feb 2025, enough for two turn-of-month entries.
+
+    Uses actual calendar dates (not freq='B') so we control the month boundary.
+    Dates chosen: Jan 28, Jan 29, Jan 30, Jan 31 (entry 1, last day of Jan),
+                  Feb 3, Feb 4, Feb 5, Feb 6 (hold days for entry 1),
+                  Feb 25, Feb 26, Feb 27, Feb 28 (entry 2, last day of Feb),
+                  Mar 3, Mar 4, Mar 5, Mar 6.
+    """
+    # Month-end entry closes
+    entry1_close = 100.0
+    entry2_close = 105.0
+
+    # Return target (no hard stop): hold=4, exit at close[i+4]
+    # We just set sensible closes
+    dates_and_closes = [
+        ("2025-01-28", 98.0),
+        ("2025-01-29", 99.0),
+        ("2025-01-30", 100.5),
+        ("2025-01-31", entry1_close),   # ← last day of Jan, entry 1
+        ("2025-02-03", 101.0),
+        ("2025-02-04", 102.0),
+        ("2025-02-05", 103.0),
+        ("2025-02-06", 104.0),          # ← exit 1 (i+4 for entry at index 3)
+        # gap to Feb month-end
+        ("2025-02-25", 104.5),
+        ("2025-02-26", 104.8),
+        ("2025-02-27", 104.9),
+        ("2025-02-28", entry2_close),   # ← last day of Feb, entry 2
+        ("2025-03-03", 106.0),
+        ("2025-03-04", 107.0),
+        ("2025-03-05", 108.0),
+        ("2025-03-06", 109.0),          # ← exit 2 (i+4 for entry at index 11)
+    ]
+    dates = [d for d, _ in dates_and_closes]
+    closes = [c for _, c in dates_and_closes]
+
+    rows = []
+    entry1_stop = entry1_close * (1 - 0.08)  # 92.0
+    entry2_stop = entry2_close * (1 - 0.08)  # 96.6
+
+    for i, (dt, c) in enumerate(dates_and_closes):
+        if trigger_stop and i == 4:
+            # bar after entry 1: low breaches stop for entry 1
+            low = entry1_stop - 1.0   # 91.0 <= 92.0
+        else:
+            low = c - 1.0   # safely above any stop level used here
+
+        rows.append({
+            "open":   c + 0.1,
+            "high":   c + 1.0,
+            "low":    low,
+            "close":  c,
+            "volume": 1_000_000,
+        })
+
+    df = pd.DataFrame(rows)
+    df.index = pd.DatetimeIndex(
+        pd.to_datetime(dates).tz_localize("America/New_York")
+    )
+    return df
+
+
+def test_turn_of_month_two_entries():
+    """Two month-ends in the frame → exactly 2 trades with correct entry dates."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    hold = 4
+    stop_pct = 0.08
+
+    df = _make_turn_of_month_df(trigger_stop=False)
+    trades = turn_of_month_trades(
+        df, "TOM", hold=hold, stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    assert len(trades) == 2, f"Expected 2 trades, got {len(trades)}: {trades}"
+
+    # Required keys
+    required = {"symbol", "entry_date", "exit_date", "return_pct", "stop_pct"}
+    for t in trades:
+        assert required.issubset(t.keys())
+        assert t["symbol"] == "TOM"
+        assert isinstance(t["entry_date"], datetime.date)
+        assert isinstance(t["exit_date"], datetime.date)
+        assert t["stop_pct"] == stop_pct
+
+    # Entry dates = last trading day of each month
+    entry_dates = {t["entry_date"] for t in trades}
+    assert datetime.date(2025, 1, 31) in entry_dates, (
+        f"Jan 31 not in entry dates: {entry_dates}"
+    )
+    assert datetime.date(2025, 2, 28) in entry_dates, (
+        f"Feb 28 not in entry dates: {entry_dates}"
+    )
+
+
+def test_turn_of_month_exit_date_correct():
+    """Exit date is entry_bar + hold (capped at last index)."""
+    hold = 4
+    df = _make_turn_of_month_df(trigger_stop=False)
+    trades = turn_of_month_trades(df, "TOM", hold=hold, stop_pct=0.08, slip_bps=15.0)
+    assert len(trades) == 2
+
+    # Trade 1: entry at Jan 31 (index 3), exit at index 3+4=7 → 2025-02-06
+    t1 = next(t for t in trades if t["entry_date"] == datetime.date(2025, 1, 31))
+    assert t1["exit_date"] == datetime.date(2025, 2, 6), (
+        f"Trade1 exit: expected 2025-02-06, got {t1['exit_date']}"
+    )
+    # return_pct = close[7]/close[3] - 1 - slip = 104/100 - 1 - slip
+    slip = 2 * 15.0 / 10_000
+    expected_ret1 = 104.0 / 100.0 - 1.0 - slip
+    assert abs(t1["return_pct"] - expected_ret1) < 1e-10
+
+    # Trade 2: entry at Feb 28 (index 11), exit at index 11+4=15 → 2025-03-06
+    t2 = next(t for t in trades if t["entry_date"] == datetime.date(2025, 2, 28))
+    assert t2["exit_date"] == datetime.date(2025, 3, 6), (
+        f"Trade2 exit: expected 2025-03-06, got {t2['exit_date']}"
+    )
+    expected_ret2 = 109.0 / 105.0 - 1.0 - slip
+    assert abs(t2["return_pct"] - expected_ret2) < 1e-10
+
+
+def test_turn_of_month_hard_stop():
+    """When first bar after entry breaches stop, trade exits at stop price."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.08
+
+    df = _make_turn_of_month_df(trigger_stop=True)
+    trades = turn_of_month_trades(
+        df, "STOP", hold=4, stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    # Entry 1 hits stop on the first bar after entry (index 4 = 2025-02-03)
+    t1 = next(t for t in trades if t["entry_date"] == datetime.date(2025, 1, 31))
+    entry = 100.0
+    stop_level = entry * (1.0 - stop_pct)  # 92.0
+    assert t1["exit_date"] == datetime.date(2025, 2, 3), (
+        f"Expected stop exit on 2025-02-03, got {t1['exit_date']}"
+    )
+    expected_ret = stop_level / entry - 1.0 - slip
+    assert abs(t1["return_pct"] - expected_ret) < 1e-10

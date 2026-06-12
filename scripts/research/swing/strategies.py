@@ -352,19 +352,69 @@ def index_rsi2_trades(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Stubs — replaced in subsequent commits
-# ---------------------------------------------------------------------------
-
 def turn_of_month_trades(
-    df,
+    df: pd.DataFrame,
     symbol: str,
     hold: int = 4,
     stop_pct: float = 0.08,
     slip_bps: float = 15.0,
-) -> list:
-    raise NotImplementedError("turn_of_month_trades not yet implemented")
+) -> list[dict]:
+    """Calendar seasonality: buy the last trading day of each month.
 
+    A "last trading day of month" is index i where i+1 < n and
+    df.index[i].month != df.index[i+1].month.  Enter at close[i].
+
+    Exit at close[i+hold] (capped at last index), UNLESS a hard stop hits
+    first: scan j=i+1..i+hold; if low[j] <= entry*(1-stop_pct) exit at stop.
+    One trade per month-end.
+
+    Returns one dict per trade: {symbol, entry_date, exit_date, return_pct, stop_pct}.
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    lows = df["low"].to_numpy()
+    index = df.index
+
+    result: list[dict] = []
+    n = len(df)
+
+    for i in range(n - 1):
+        # Last trading day of month: next bar is a different month
+        if index[i].month == index[i + 1].month:
+            continue
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+
+        exit_price = None
+        exit_j = None
+
+        end_j = min(i + hold, n - 1)
+        for j in range(i + 1, end_j + 1):
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                exit_j = j
+                break
+
+        if exit_price is None:
+            exit_j = end_j
+            exit_price = closes[exit_j]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append({
+            "symbol": symbol,
+            "entry_date": index[i].date(),
+            "exit_date": index[exit_j].date(),
+            "return_pct": ret,
+            "stop_pct": stop_pct,
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Stub — replaced in subsequent commit
+# ---------------------------------------------------------------------------
 
 def breakout_52w_trades(
     df,
