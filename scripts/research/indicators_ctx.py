@@ -21,6 +21,10 @@ class Ctx:
     or_low: float
     or_volume: float
     pm_high: Optional[float]
+    prev_high: Optional[float] = None
+    prev_low: Optional[float] = None
+    swing_high: Optional[float] = None
+    swing_low: Optional[float] = None
 
 
 def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -33,7 +37,7 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.rolling(period, min_periods=1).mean()
 
 
-def build_context(day_bars: pd.DataFrame) -> Ctx:
+def build_context(day_bars: pd.DataFrame, levels=None) -> Ctx:
     et = day_bars.index.tz_convert(ET)
     et_time = pd.Series([t.time() for t in et], index=day_bars.index)
 
@@ -54,5 +58,10 @@ def build_context(day_bars: pd.DataFrame) -> Ctx:
     sess["ema9"] = sess["close"].ewm(span=9, adjust=False).mean()
     sess["atr"] = _atr(sess)
 
+    lvl = levels or {}
     return Ctx(bars=sess, or_high=or_high, or_low=or_low,
-               or_volume=or_volume, pm_high=pm_high)
+               or_volume=or_volume, pm_high=pm_high,
+               prev_high=lvl.get("prev_high"),
+               prev_low=lvl.get("prev_low"),
+               swing_high=lvl.get("swing_high"),
+               swing_low=lvl.get("swing_low"))

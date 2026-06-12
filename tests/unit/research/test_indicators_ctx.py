@@ -29,3 +29,20 @@ def test_build_context_or_pm_and_columns():
     # vwap of first session bar = typical price (h+l+c)/3
     first = ctx.bars.iloc[0]
     assert round(first["vwap"], 4) == round((9.5 + 8.9 + 9.4) / 3, 4)
+
+
+def test_build_context_levels_populated():
+    levels = {"prev_high": 10.5, "prev_low": 9.1, "swing_high": 12.0, "swing_low": 8.5}
+    ctx = build_context(_day(), levels=levels)
+    assert ctx.prev_high == 10.5
+    assert ctx.prev_low == 9.1
+    assert ctx.swing_high == 12.0
+    assert ctx.swing_low == 8.5
+
+
+def test_build_context_levels_default_none():
+    ctx = build_context(_day())
+    assert ctx.prev_high is None
+    assert ctx.prev_low is None
+    assert ctx.swing_high is None
+    assert ctx.swing_low is None
