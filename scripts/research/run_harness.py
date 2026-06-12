@@ -14,21 +14,23 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.research.gapper_universe import DEFAULT_PARAMS, reconstruct
+from scripts.research.gapper_universe import DEFAULT_PARAMS, compute_levels, reconstruct
 from scripts.research.indicators_ctx import build_context
 from scripts.research.metrics import summarize
 from scripts.research.setups.first_pullback import FirstPullback
 from scripts.research.setups.orb_clean import ORBClean
 from scripts.research.setups.pm_high_break import PMHighBreak
+from scripts.research.setups.sneaky_pivot import SneakyPivot
 from scripts.research.setups.vwap_reclaim import VWAPReclaim
 
-ALL_SETUPS = [ORBClean(), VWAPReclaim(), FirstPullback(), PMHighBreak()]
+ALL_SETUPS = [ORBClean(), VWAPReclaim(), FirstPullback(), PMHighBreak(), SneakyPivot()]
 CACHE_DIR = Path("state/backtest_cache")
 
 
-def run_setups_on_day(symbol: str, day_bars: pd.DataFrame, slip_bps: float) -> dict:
+def run_setups_on_day(symbol: str, day_bars: pd.DataFrame, slip_bps: float,
+                      levels=None) -> dict:
     """Run every setup on one symbol-day. Returns {setup_key: Trade|None}."""
-    ctx = build_context(day_bars)
+    ctx = build_context(day_bars, levels=levels)
     ctx.symbol = symbol  # consumed by Setup._exit_from
     out = {}
     for setup in ALL_SETUPS:
@@ -55,6 +57,13 @@ def _cached_5min(client, symbol: str, day: date, extended: bool) -> pd.DataFrame
 
 def run(client, symbols, start: date, end: date, params, slip_bps: float) -> list[dict]:
     universe = reconstruct(client, symbols, start, end, params)
+    # fetch daily bars once per symbol to compute prior-day/swing levels
+    daily_cache: dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        df = client.get_history(sym, "1Day", start - timedelta(days=30), end)
+        if not df.empty:
+            daily_cache[sym] = df
+
     trades_by_setup: dict[str, list[float]] = {s.key: [] for s in ALL_SETUPS}
     n_days = 0
     for iso_day, syms in universe.items():
@@ -64,7 +73,10 @@ def run(client, symbols, start: date, end: date, params, slip_bps: float) -> lis
             if bars.empty:
                 continue
             n_days += 1
-            for key, trade in run_setups_on_day(sym, bars, slip_bps).items():
+            lvl = None
+            if sym in daily_cache:
+                lvl = compute_levels(daily_cache[sym], d)
+            for key, trade in run_setups_on_day(sym, bars, slip_bps, levels=lvl).items():
                 if trade is not None:
                     trades_by_setup[key].append(trade.r_multiple)
     reports = [summarize(k, rs) for k, rs in trades_by_setup.items()]
