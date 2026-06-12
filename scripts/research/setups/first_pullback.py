@@ -1,5 +1,7 @@
-"""Setup C: after an opening drive of >= 1 ATR off the open, take the first bar
-that pulls back toward the 9-EMA and then closes back above it. Stop = pullback low."""
+"""Setup C: after an opening drive of >= 1 ATR off the open, wait for the first
+down-close pullback bar, then enter when a later bar closes back above the 9-EMA.
+Stop = the bar-before-entry low. (v1 pullback proxy: a down-close after the drive;
+the empirical ranking will tell us whether to tighten this to an explicit EMA touch.)"""
 from __future__ import annotations
 
 from datetime import time
