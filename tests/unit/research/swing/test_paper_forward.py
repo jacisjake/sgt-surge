@@ -207,3 +207,185 @@ def test_step_does_not_duplicate_existing_position():
     # Still exactly 1 open position (no new entry)
     assert len(s2["open_positions"]) == 1
     assert s2["available_cash"] == 175.0
+
+
+# ---------------------------------------------------------------------------
+# step — exits and idempotency
+# ---------------------------------------------------------------------------
+
+def _state_with_open_position(
+    symbol: str = "SYM",
+    entry_price: float = 100.0,
+    stop_pct: float = 0.08,
+    notional: float = 25.0,
+    equity: float = 200.0,
+    entry_date: str = "2025-01-15",
+) -> dict:
+    """Return a state dict that already has one open position."""
+    stop_price = entry_price * (1 - stop_pct)
+    s = new_state(starting_equity=equity)
+    s["available_cash"] = equity - notional
+    s["open_positions"] = [{
+        "symbol": symbol,
+        "entry_date": entry_date,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "notional": notional,
+    }]
+    return s
+
+
+def _make_exit_df(
+    close_today: float,
+    low_today: float,
+    ma_exit: int = 3,
+    n_seed: int = 5,
+    seed_close: float = 100.0,
+) -> pd.DataFrame:
+    """Frame with n_seed seed bars then one 'today' bar.
+
+    Seed bars have close=seed_close so SMA(ma_exit) is well-defined by today.
+    today bar has the provided close_today and low_today.
+    """
+    rows = []
+    for _ in range(n_seed):
+        rows.append({
+            "open": seed_close,
+            "high": seed_close + 1,
+            "low": seed_close - 1,
+            "close": seed_close,
+            "volume": 1_000_000,
+        })
+    rows.append({
+        "open": close_today - 0.5,
+        "high": close_today + 1,
+        "low": low_today,
+        "close": close_today,
+        "volume": 1_000_000,
+    })
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-13", periods=len(rows), freq="B", tz="America/New_York")
+    return df
+
+
+def test_step_closes_position_on_hard_stop():
+    """When today's low <= stop_price, position exits at stop_price."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    entry_price = 100.0
+    stop_pct = 0.08
+    stop_price = entry_price * (1 - stop_pct)  # 92.0
+    notional = 25.0
+
+    s = _state_with_open_position(
+        entry_price=entry_price, stop_pct=stop_pct, notional=notional,
+        equity=200.0, entry_date="2025-01-15",
+    )
+    # today bar: low=91.0 <= 92.0 → stop triggered
+    df = _make_exit_df(close_today=93.0, low_today=91.0, ma_exit=3, seed_close=100.0)
+    today = df.index[-1].date()  # 2025-01-21
+
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.01, lookback=3, ma_exit=3,
+              stop_pct=stop_pct, slip_bps=slip_bps)
+
+    assert len(s2["open_positions"]) == 0, "Position should be closed"
+    assert len(s2["closed_trades"]) == 1
+    t = s2["closed_trades"][0]
+    assert t["reason"] == "stop"
+    assert abs(t["exit_price"] - stop_price) < 1e-9
+
+    expected_pnl = notional * ((stop_price * (1 - slip)) / (entry_price * (1 + slip)) - 1)
+    assert abs(t["pnl"] - expected_pnl) < 1e-9
+    assert expected_pnl < 0.0  # stop is a loss
+
+    # cash returns: available_cash = initial_cash + notional + pnl
+    initial_cash = 200.0 - notional
+    assert abs(s2["available_cash"] - (initial_cash + notional + expected_pnl)) < 1e-9
+
+
+def test_step_closes_position_on_trend_break():
+    """When close < SMA(ma_exit), position exits at today's close."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    entry_price = 100.0
+    stop_pct = 0.08
+    notional = 25.0
+    ma_exit = 3
+
+    s = _state_with_open_position(
+        entry_price=entry_price, stop_pct=stop_pct, notional=notional,
+        equity=200.0, entry_date="2025-01-15",
+    )
+    # Seed close=100.0 for 5 bars, then today close=85.0.
+    # SMA(3) at today = (100+100+85)/3=95.0; 85 < 95 → trend_break.
+    # low_today=93.0 > stop_price=92.0 → stop does NOT fire first.
+    df = _make_exit_df(close_today=85.0, low_today=93.0, ma_exit=ma_exit, seed_close=100.0)
+    today = df.index[-1].date()
+
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.01, lookback=3, ma_exit=ma_exit,
+              stop_pct=stop_pct, slip_bps=slip_bps)
+
+    assert len(s2["open_positions"]) == 0
+    assert len(s2["closed_trades"]) == 1
+    t = s2["closed_trades"][0]
+    assert t["reason"] == "trend_break"
+    assert abs(t["exit_price"] - 85.0) < 1e-9
+
+    expected_pnl = notional * ((85.0 * (1 - slip)) / (entry_price * (1 + slip)) - 1)
+    assert abs(t["pnl"] - expected_pnl) < 1e-9
+
+
+def test_step_stop_checked_before_trend_break():
+    """When BOTH stop AND close < SMA are true, reason is 'stop' (stop checked first)."""
+    entry_price = 100.0
+    stop_pct = 0.08
+    stop_price = entry_price * (1 - stop_pct)  # 92.0
+    notional = 25.0
+
+    s = _state_with_open_position(
+        entry_price=entry_price, stop_pct=stop_pct, notional=notional, equity=200.0
+    )
+    # low=80.0 <= 92.0 (stop fires); close=80.0 < SMA (trend_break also true)
+    df = _make_exit_df(close_today=80.0, low_today=80.0, ma_exit=3, seed_close=100.0)
+    today = df.index[-1].date()
+
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.01, lookback=3, ma_exit=3,
+              stop_pct=stop_pct, slip_bps=15.0)
+
+    assert s2["closed_trades"][0]["reason"] == "stop"
+
+
+def test_step_idempotent_same_day():
+    """Calling step twice with the same today must not double-process."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    today = df.index[-1].date()
+    bars = {"SYM": df}
+
+    s = new_state(starting_equity=200.0)
+    s1 = step(s, bars, today, lookback=lookback, ma_exit=3, stop_pct=0.08)
+    open_count_after_1 = len(s1["open_positions"])
+    cash_after_1 = s1["available_cash"]
+
+    # Second call with same day — should be a no-op
+    s2 = step(s1, bars, today, lookback=lookback, ma_exit=3, stop_pct=0.08)
+    assert len(s2["open_positions"]) == open_count_after_1
+    assert s2["available_cash"] == cash_after_1
+    assert len(s2["closed_trades"]) == 0
+
+
+def test_step_idempotent_earlier_day():
+    """Calling step with today < last_date returns state unchanged."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    today = df.index[-1].date()
+    yesterday = today - datetime.timedelta(days=1)
+    bars = {"SYM": df}
+
+    s = new_state(starting_equity=200.0)
+    s1 = step(s, bars, today, lookback=lookback, ma_exit=3, stop_pct=0.08)
+    s2 = step(s1, bars, yesterday, lookback=lookback, ma_exit=3, stop_pct=0.08)
+
+    # No change
+    assert len(s2["open_positions"]) == len(s1["open_positions"])
+    assert s2["available_cash"] == s1["available_cash"]
