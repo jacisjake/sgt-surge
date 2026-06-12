@@ -1,10 +1,16 @@
 """Tests for swing/strategies.py — written FIRST (TDD red phase)."""
 from __future__ import annotations
 
+import datetime
+
 import pandas as pd
 import pytest
 
-from scripts.research.swing.strategies import overnight_drift, short_term_reversal
+from scripts.research.swing.strategies import (
+    overnight_drift,
+    short_term_reversal,
+    short_term_reversal_trades,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +187,210 @@ def test_short_term_reversal_stop_exit():
     expected_return = -stop_pct - slip  # stop_level/entry - 1 - slip
     closest = min(returns, key=lambda r: abs(r - expected_return))
     assert abs(closest - expected_return) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# short_term_reversal_trades
+# ---------------------------------------------------------------------------
+
+def test_short_term_reversal_trades_returns_dicts_with_required_keys():
+    """Each element returned must be a dict with the required keys."""
+    slip_bps = 15.0
+    stop_pct = 0.05
+    target_pct = 0.10
+    ma = 5
+
+    entry_price = 108.0
+
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": entry_price, "volume": 1_000_000},
+        # high >= target (118.8) -> exit at target
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    trades = short_term_reversal_trades(
+        df, symbol="TEST", down_days=3, hold=5, stop_pct=stop_pct,
+        target_pct=target_pct, ma=ma, slip_bps=slip_bps,
+    )
+
+    assert len(trades) >= 1
+    required_keys = {"symbol", "entry_date", "exit_date", "return_pct", "stop_pct"}
+    for t in trades:
+        assert required_keys.issubset(t.keys()), f"Missing keys: {t}"
+
+
+def test_short_term_reversal_trades_symbol_propagated():
+    """The symbol field in each dict matches the argument passed in."""
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": 108.0, "volume": 1_000_000},
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    trades = short_term_reversal_trades(df, symbol="AAPL", ma=5)
+    for t in trades:
+        assert t["symbol"] == "AAPL"
+
+
+def test_short_term_reversal_trades_return_pct_matches_bare_version():
+    """return_pct in dicts must exactly match the bare-float version.
+
+    Same 10-row frame used in test_short_term_reversal_hits_target.
+    The target-hit trade should produce the same return_pct as short_term_reversal.
+    """
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.05
+    target_pct = 0.10
+    ma = 5
+
+    entry_price = 108.0
+    target = entry_price * (1 + target_pct)  # 118.8
+
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": entry_price, "volume": 1_000_000},
+        # high >= target on next bar -> target exit
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    bare_returns = short_term_reversal(
+        df, down_days=3, hold=5, stop_pct=stop_pct,
+        target_pct=target_pct, ma=ma, slip_bps=slip_bps,
+    )
+    trades = short_term_reversal_trades(
+        df, symbol="TEST", down_days=3, hold=5, stop_pct=stop_pct,
+        target_pct=target_pct, ma=ma, slip_bps=slip_bps,
+    )
+
+    # Same number of trades
+    assert len(trades) == len(bare_returns)
+
+    # return_pcts match bare returns in order
+    for t, r in zip(trades, bare_returns):
+        assert abs(t["return_pct"] - r) < 1e-10, (
+            f"return_pct mismatch: {t['return_pct']} vs {r}"
+        )
+
+
+def test_short_term_reversal_trades_dates_are_date_objects():
+    """entry_date and exit_date must be datetime.date instances."""
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": 108.0, "volume": 1_000_000},
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    trades = short_term_reversal_trades(df, symbol="TEST", ma=5)
+    assert len(trades) >= 1
+    for t in trades:
+        assert isinstance(t["entry_date"], datetime.date)
+        assert isinstance(t["exit_date"], datetime.date)
+        assert t["exit_date"] >= t["entry_date"]
+
+
+def test_short_term_reversal_trades_entry_and_exit_dates_correct():
+    """entry_date=df.index[i].date(), exit_date=df.index[exit_j].date().
+
+    With the 10-row frame: entry at index 4 (2025-01-08 Business day),
+    exit at index 5 (target hit on next bar = 2025-01-09 Business day).
+    _make_df uses pd.date_range('2025-01-02', freq='B'), so:
+      index[0]=2025-01-02, [1]=2025-01-03, [2]=2025-01-06, [3]=2025-01-07,
+      [4]=2025-01-08 (entry), [5]=2025-01-09 (exit).
+    """
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        # entry day i=4 -> 2025-01-08
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": 108.0, "volume": 1_000_000},
+        # exit day j=5 -> 2025-01-09 (high >= target)
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    trades = short_term_reversal_trades(
+        df, symbol="TEST", down_days=3, hold=5, stop_pct=0.05,
+        target_pct=0.10, ma=5, slip_bps=15.0,
+    )
+
+    # Find the trade with entry on 2025-01-08
+    entry_dt = datetime.date(2025, 1, 8)
+    exit_dt = datetime.date(2025, 1, 9)
+    matching = [t for t in trades if t["entry_date"] == entry_dt]
+    assert len(matching) == 1, f"Expected 1 trade at entry_date={entry_dt}, got {matching}"
+    assert matching[0]["exit_date"] == exit_dt
+
+
+def test_short_term_reversal_trades_stop_pct_field():
+    """stop_pct in dict matches the argument passed."""
+    rows = [
+        {"open": 50.0,  "high": 52.0,  "low": 48.0,  "close": 50.0,  "volume": 1_000_000},
+        {"open": 131.0, "high": 132.0, "low": 129.0, "close": 130.0, "volume": 1_000_000},
+        {"open": 126.0, "high": 127.0, "low": 124.0, "close": 125.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 122.0, "low": 119.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 108.5, "high": 110.0, "low": 107.0, "close": 108.0, "volume": 1_000_000},
+        {"open": 109.0, "high": 120.0, "low": 108.0, "close": 119.0, "volume": 1_200_000},
+        {"open": 118.0, "high": 122.0, "low": 117.0, "close": 120.0, "volume": 1_000_000},
+        {"open": 119.0, "high": 123.0, "low": 118.0, "close": 121.0, "volume": 1_000_000},
+        {"open": 120.0, "high": 124.0, "low": 119.0, "close": 122.0, "volume": 1_000_000},
+        {"open": 121.0, "high": 125.0, "low": 120.0, "close": 123.0, "volume": 1_000_000},
+    ]
+    df = _make_df(rows)
+
+    for sp in (0.03, 0.07):
+        trades = short_term_reversal_trades(df, symbol="TEST", stop_pct=sp, ma=5)
+        for t in trades:
+            assert t["stop_pct"] == sp
+
+
+def test_short_term_reversal_trades_empty_when_no_setups():
+    """Returns [] when no qualifying setups exist."""
+    df = _make_df([
+        {"open": 100.0, "high": 102.0, "low": 99.0,  "close": 101.0, "volume": 1_000_000},
+        {"open": 101.0, "high": 103.0, "low": 100.0, "close": 102.0, "volume": 1_000_000},
+        {"open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0, "volume": 1_000_000},
+        {"open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0, "volume": 1_000_000},
+        {"open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 1_000_000},
+        {"open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 1_000_000},
+    ])
+    trades = short_term_reversal_trades(df, symbol="TEST", down_days=3, ma=3)
+    assert trades == []

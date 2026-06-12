@@ -6,6 +6,8 @@ slippage.  Slippage is applied as 2 * slip_bps / 10_000 (entry + exit crossing).
 """
 from __future__ import annotations
 
+import datetime
+
 import pandas as pd
 
 
@@ -92,5 +94,82 @@ def short_term_reversal(
 
         ret = exit_price / entry - 1.0 - slip
         result.append(ret)
+
+    return result
+
+
+def short_term_reversal_trades(
+    df: pd.DataFrame,
+    symbol: str,
+    down_days: int = 3,
+    hold: int = 5,
+    stop_pct: float = 0.05,
+    target_pct: float = 0.10,
+    ma: int = 200,
+    slip_bps: float = 15.0,
+) -> list[dict]:
+    """Dated-trade variant of short_term_reversal.
+
+    Identical entry/exit logic; returns one dict per trade instead of bare floats.
+
+    Returns
+    -------
+    list of dicts, each containing:
+      "symbol"     : the ticker string passed in
+      "entry_date" : datetime.date — df.index[i].date() at entry bar
+      "exit_date"  : datetime.date — df.index[exit_j].date() at exit bar
+      "return_pct" : float — after slippage (same value as short_term_reversal)
+      "stop_pct"   : float — the stop_pct argument
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    sma = df["close"].rolling(ma).mean().to_numpy()
+    index = df.index
+
+    result: list[dict] = []
+    n = len(df)
+
+    for i in range(down_days, n - 1):
+        if pd.isna(sma[i]):
+            continue
+
+        if closes[i] <= sma[i]:
+            continue
+
+        decreasing = all(
+            closes[i - k] < closes[i - k - 1] for k in range(down_days)
+        )
+        if not decreasing:
+            continue
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+        target_level = entry * (1.0 + target_pct)
+
+        exit_price = None
+        exit_j = None
+        for j in range(i + 1, min(i + 1 + hold, n)):
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                exit_j = j
+                break
+            if highs[j] >= target_level:
+                exit_price = target_level
+                exit_j = j
+                break
+        if exit_price is None:
+            exit_j = min(i + hold, n - 1)
+            exit_price = closes[exit_j]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append({
+            "symbol": symbol,
+            "entry_date": index[i].date(),
+            "exit_date": index[exit_j].date(),
+            "return_pct": ret,
+            "stop_pct": stop_pct,
+        })
 
     return result
