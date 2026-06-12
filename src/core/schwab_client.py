@@ -236,6 +236,12 @@ class SchwabClient:
         if not method_name:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         method = getattr(self._client, method_name)
+        # schwab-py requires datetime, not date; coerce so callers may pass either.
+        import datetime as _dt
+        if isinstance(start, _dt.date) and not isinstance(start, _dt.datetime):
+            start = _dt.datetime(start.year, start.month, start.day)
+        if isinstance(end, _dt.date) and not isinstance(end, _dt.datetime):
+            end = _dt.datetime(end.year, end.month, end.day)
         resp = method(symbol, start_datetime=start, end_datetime=end,
                       need_extended_hours_data=extended_hours)
         if resp.status_code != httpx.codes.OK:

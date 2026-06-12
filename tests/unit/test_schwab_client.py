@@ -369,3 +369,17 @@ def test_get_history_passes_dates_and_normalizes(schwab, mock_schwab_py_client):
     assert kwargs["start_datetime"] == start
     assert kwargs["end_datetime"] == end
     assert kwargs["need_extended_hours_data"] is True
+
+
+def test_get_history_coerces_date_to_datetime(schwab, mock_schwab_py_client):
+    # schwab-py rejects datetime.date; reconstruct() passes dates. get_history must
+    # coerce date -> datetime so daily-bar fetches don't blow up against the real API.
+    from datetime import date, datetime
+    mock_schwab_py_client.get_price_history_every_day.return_value = MagicMock(
+        status_code=200, json=lambda: {"candles": []},
+    )
+    schwab.get_history("AAPL", "1Day", date(2026, 2, 12), date(2026, 6, 10))
+    _, kwargs = mock_schwab_py_client.get_price_history_every_day.call_args
+    assert isinstance(kwargs["start_datetime"], datetime)
+    assert isinstance(kwargs["end_datetime"], datetime)
+    assert kwargs["start_datetime"] == datetime(2026, 2, 12)
