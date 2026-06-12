@@ -10,6 +10,7 @@ from scripts.research.swing.strategies import (
     overnight_drift,
     short_term_reversal,
     short_term_reversal_trades,
+    trend_pullback_trades,
 )
 
 
@@ -393,4 +394,150 @@ def test_short_term_reversal_trades_empty_when_no_setups():
         {"open": 105.0, "high": 107.0, "low": 104.0, "close": 106.0, "volume": 1_000_000},
     ])
     trades = short_term_reversal_trades(df, symbol="TEST", down_days=3, ma=3)
+    assert trades == []
+
+
+# ---------------------------------------------------------------------------
+# trend_pullback_trades
+# ---------------------------------------------------------------------------
+#
+# Frame design (ma_entry=5, ma_exit=2, down_days=3, stop_pct=0.08):
+#
+# 12 rows with closes:
+#   [0]=100, [1]=110, [2]=120, [3]=130, [4]=140, [5]=139, [6]=138, [7]=137,
+#   [8]=138, [9]=139, [10]=140, [11]=130
+#
+# Entry at i=7:
+#   - SMA(5)[7] = (130+140+139+138+137)/5 = 136.8 < 137 (uptrend ✓)
+#   - closes[7]=137 < closes[6]=138 < closes[5]=139 < closes[4]=140 (3 down ✓)
+#   - stop_level = 137 * (1-0.08) = 126.04
+#
+# Lows set to close - 3 for post-entry rows (all > 126.04, no stop trigger).
+# Exit at j=11: close=130 < SMA(2)[11]=135 → MA-break exit.
+#
+# Expected return = 130/137 - 1 - 2*15/10000 ≈ -0.0541
+
+def _make_trend_df(stop_triggered: bool = False) -> pd.DataFrame:
+    """12-row frame for trend_pullback tests.
+
+    When stop_triggered=True the bar after entry has a low <= stop level,
+    so the trade exits at the hard stop.  Otherwise lows are safely above.
+    """
+    closes = [100.0, 110.0, 120.0, 130.0, 140.0, 139.0, 138.0, 137.0,
+              138.0, 139.0, 140.0, 130.0]
+
+    rows = []
+    stop_level = 137.0 * (1 - 0.08)  # 126.04
+
+    for idx_i, c in enumerate(closes):
+        if stop_triggered and idx_i == 8:
+            # bar right after entry: low breaches the stop
+            low = stop_level - 1.0   # 125.04 ≤ 126.04
+        else:
+            low = c - 3.0            # safely above 126.04 for post-entry bars
+
+        rows.append({
+            "open":   c + 0.1,
+            "high":   c + 1.0,
+            "low":    low,
+            "close":  c,
+            "volume": 1_000_000,
+        })
+
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range(
+        "2025-01-02", periods=len(df), freq="B", tz="America/New_York"
+    )
+    return df
+
+
+def test_trend_pullback_trades_ma_break_exit():
+    """One trade fired, exits on MA(2) break, exit_date and return correct.
+
+    Entry i=7 (2025-01-13). Exit j=11 (2025-01-17).
+    Expected return ≈ 130/137 - 1 - 2*15/10000.
+    """
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.08
+    ma_entry = 5
+    ma_exit = 2
+    down_days = 3
+
+    df = _make_trend_df(stop_triggered=False)
+    trades = trend_pullback_trades(
+        df, "TPB", down_days=down_days,
+        ma_entry=ma_entry, ma_exit=ma_exit,
+        stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    assert len(trades) == 1, f"Expected 1 trade, got {len(trades)}: {trades}"
+    t = trades[0]
+
+    # Required keys present
+    assert {"symbol", "entry_date", "exit_date", "return_pct", "stop_pct"}.issubset(t)
+
+    # Symbol propagated
+    assert t["symbol"] == "TPB"
+
+    # Dates
+    assert t["entry_date"] == datetime.date(2025, 1, 13)   # index[7]
+    assert t["exit_date"]  == datetime.date(2025, 1, 17)   # index[11]
+
+    # Return: exit at close[11]=130, entry=137
+    expected_ret = 130.0 / 137.0 - 1.0 - slip
+    assert abs(t["return_pct"] - expected_ret) < 1e-10, (
+        f"return_pct {t['return_pct']:.8f} != expected {expected_ret:.8f}"
+    )
+
+    # stop_pct stored correctly
+    assert t["stop_pct"] == stop_pct
+
+    # Return is positive-leaning but in this test it's actually negative
+    # (130<137 = dip exit). The important thing is it fired exactly once.
+
+
+def test_trend_pullback_trades_hard_stop_exit():
+    """Trade exits at hard stop when bar after entry breaches stop level.
+
+    Entry at 137, stop_pct=0.08 → stop_level=126.04.
+    Bar i+1 has low=125.04 ≤ 126.04 → exit at stop_level.
+    Expected return ≈ -stop_pct - 2*slip.
+    """
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.08
+
+    df = _make_trend_df(stop_triggered=True)
+    trades = trend_pullback_trades(
+        df, "TPB_STOP", down_days=3,
+        ma_entry=5, ma_exit=2,
+        stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    assert len(trades) >= 1
+    # Find the trade that entered at 137 (entry_date=2025-01-13)
+    t = next(x for x in trades if x["entry_date"] == datetime.date(2025, 1, 13))
+
+    entry = 137.0
+    stop_level = entry * (1 - stop_pct)
+    expected_ret = stop_level / entry - 1.0 - slip   # ≈ -0.083
+    assert abs(t["return_pct"] - expected_ret) < 1e-10, (
+        f"return_pct {t['return_pct']:.8f} != expected {expected_ret:.8f}"
+    )
+
+    # Exit is on the first bar after entry (index[8] = 2025-01-14)
+    assert t["exit_date"] == datetime.date(2025, 1, 14)
+
+
+def test_trend_pullback_trades_no_setup_returns_empty():
+    """Monotonically rising closes never produce a qualifying 3-down sequence."""
+    rows = [
+        {"open": c - 0.2, "high": c + 0.5, "low": c - 0.5, "close": float(c), "volume": 1_000_000}
+        for c in range(100, 115)
+    ]
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=len(rows), freq="B", tz="America/New_York")
+
+    trades = trend_pullback_trades(df, "NONE", down_days=3, ma_entry=5, ma_exit=2)
     assert trades == []

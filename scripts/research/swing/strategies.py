@@ -98,6 +98,90 @@ def short_term_reversal(
     return result
 
 
+def trend_pullback_trades(
+    df: pd.DataFrame,
+    symbol: str,
+    down_days: int = 3,
+    ma_entry: int = 200,
+    ma_exit: int = 50,
+    stop_pct: float = 0.08,
+    slip_bps: float = 15.0,
+) -> list[dict]:
+    """Buy-the-dip-in-an-uptrend, hold the trend.
+
+    Entry on day i when: close[i] > SMA(close, ma_entry)[i]  (uptrend filter)
+      AND the last `down_days` closes strictly decreasing
+      (close[i] < close[i-1] < ... < close[i-down_days]).
+    Enter at close[i]. Hard stop at entry*(1-stop_pct). Over days j=i+1..end:
+      - if low[j] <= stop: exit at stop (CHECK FIRST, conservative)
+      - elif not NaN(SMA(close, ma_exit)[j]) and close[j] < SMA_exit[j]:
+            exit at close[j]   (trend break)
+    If neither ever triggers, exit at the last close.
+    Returns one dict per trade: {"symbol", "entry_date" (date), "exit_date" (date),
+      "return_pct" (after 2*slip), "stop_pct"}.  entry_date=df.index[i].date(),
+      exit_date=df.index[exit_j].date().  Skip i where SMA_entry is NaN or i+1>=len.
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    lows = df["low"].to_numpy()
+    sma_entry = df["close"].rolling(ma_entry).mean().to_numpy()
+    sma_exit = df["close"].rolling(ma_exit).mean().to_numpy()
+    index = df.index
+
+    result: list[dict] = []
+    n = len(df)
+
+    for i in range(down_days, n - 1):
+        # Need valid SMA_entry
+        if pd.isna(sma_entry[i]):
+            continue
+
+        # Uptrend filter
+        if closes[i] <= sma_entry[i]:
+            continue
+
+        # Strictly decreasing closes: close[i] < close[i-1] < ... < close[i-down_days]
+        decreasing = all(
+            closes[i - k] < closes[i - k - 1] for k in range(down_days)
+        )
+        if not decreasing:
+            continue
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+
+        exit_price = None
+        exit_j = None
+
+        for j in range(i + 1, n):
+            # Check hard stop first (conservative)
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                exit_j = j
+                break
+            # Check trend break: close below SMA_exit (only when SMA_exit is valid)
+            if not pd.isna(sma_exit[j]) and closes[j] < sma_exit[j]:
+                exit_price = closes[j]
+                exit_j = j
+                break
+
+        # Time exit: last bar if no stop or trend break
+        if exit_price is None:
+            exit_j = n - 1
+            exit_price = closes[exit_j]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append({
+            "symbol": symbol,
+            "entry_date": index[i].date(),
+            "exit_date": index[exit_j].date(),
+            "return_pct": ret,
+            "stop_pct": stop_pct,
+        })
+
+    return result
+
+
 def short_term_reversal_trades(
     df: pd.DataFrame,
     symbol: str,

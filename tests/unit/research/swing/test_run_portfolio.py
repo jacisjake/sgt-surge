@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import datetime
+from functools import partial
 
 import pandas as pd
 import pytest
 
 from scripts.research.swing.run_portfolio import run
+from scripts.research.swing.strategies import (
+    short_term_reversal_trades,
+    trend_pullback_trades,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +67,34 @@ def _make_daily_df(n_rows: int = 250) -> pd.DataFrame:
     return df
 
 
+def _make_trend_daily_df() -> pd.DataFrame:
+    """Daily OHLCV frame that reliably triggers trend_pullback_trades with
+    ma_entry=5, ma_exit=2, down_days=3, stop_pct=0.08.
+
+    12 bars mirroring the strategy unit-test frame:
+      closes: 100 110 120 130 140 139 138 137 138 139 140 130
+    Entry at i=7. Exit at i=11 via MA(2) break.
+    Lows set to close-3 so hard stop (126.04) is never triggered.
+    """
+    closes = [100.0, 110.0, 120.0, 130.0, 140.0, 139.0, 138.0, 137.0,
+              138.0, 139.0, 140.0, 130.0]
+    rows = [
+        {
+            "open":   c + 0.1,
+            "high":   c + 1.0,
+            "low":    c - 3.0,
+            "close":  c,
+            "volume": 1_000_000,
+        }
+        for c in closes
+    ]
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range(
+        "2024-01-02", periods=len(rows), freq="B", tz="America/New_York"
+    )
+    return df
+
+
 class _FakeClient:
     """Always returns the same frame for any symbol."""
 
@@ -73,13 +106,24 @@ class _FakeClient:
 
 
 # ---------------------------------------------------------------------------
+# Default trade_fn for legacy tests (short_term_reversal_trades with defaults)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TRADE_FN = partial(
+    short_term_reversal_trades,
+    down_days=3, hold=5, stop_pct=0.05, target_pct=0.10, ma=200, slip_bps=15.0,
+)
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 def test_run_returns_dict_with_required_keys():
     """run() must return a dict containing the portfolio summary keys."""
     client = _FakeClient(_make_daily_df())
-    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01")
+    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01",
+                 trade_fn=_DEFAULT_TRADE_FN)
 
     required = {
         "starting_equity", "final_equity", "total_return",
@@ -94,7 +138,8 @@ def test_run_returns_dict_with_required_keys():
 def test_run_final_equity_positive():
     """final_equity must always be > 0."""
     client = _FakeClient(_make_daily_df())
-    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01")
+    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01",
+                 trade_fn=_DEFAULT_TRADE_FN)
     assert result["final_equity"] > 0.0
 
 
@@ -103,8 +148,10 @@ def test_run_with_two_symbols_more_trades_taken():
     df = _make_daily_df()
     client = _FakeClient(df)
 
-    result_one = run(client, ["AAPL"], "2024-01-01", "2025-01-01")
-    result_two = run(client, ["AAPL", "MSFT"], "2024-01-01", "2025-01-01")
+    result_one = run(client, ["AAPL"], "2024-01-01", "2025-01-01",
+                     trade_fn=_DEFAULT_TRADE_FN)
+    result_two = run(client, ["AAPL", "MSFT"], "2024-01-01", "2025-01-01",
+                     trade_fn=_DEFAULT_TRADE_FN)
 
     assert result_two["n_taken"] >= result_one["n_taken"]
 
@@ -113,6 +160,7 @@ def test_run_accepts_start_equity_and_risk_pct_params():
     """Custom starting_equity and risk_pct are passed through."""
     client = _FakeClient(_make_daily_df())
     result = run(client, ["AAPL"], "2024-01-01", "2025-01-01",
+                 trade_fn=_DEFAULT_TRADE_FN,
                  starting_equity=500.0, risk_pct=0.02)
     assert result["starting_equity"] == 500.0
 
@@ -120,7 +168,8 @@ def test_run_accepts_start_equity_and_risk_pct_params():
 def test_run_empty_symbol_list_returns_starting_equity_unchanged():
     """No symbols → no trades → final_equity == starting_equity."""
     client = _FakeClient(_make_daily_df())
-    result = run(client, [], "2024-01-01", "2025-01-01", starting_equity=300.0)
+    result = run(client, [], "2024-01-01", "2025-01-01",
+                 trade_fn=_DEFAULT_TRADE_FN, starting_equity=300.0)
     assert result["final_equity"] == 300.0
     assert result["n_taken"] == 0
 
@@ -133,7 +182,7 @@ def test_run_skips_none_dataframe():
             return None
 
     result = run(_NoneClient(), ["AAPL"], "2024-01-01", "2025-01-01",
-                 starting_equity=200.0)
+                 trade_fn=_DEFAULT_TRADE_FN, starting_equity=200.0)
     assert result["final_equity"] == 200.0
     assert result["n_taken"] == 0
 
@@ -141,7 +190,8 @@ def test_run_skips_none_dataframe():
 def test_run_n_taken_plus_n_skipped_equals_total_trades():
     """n_taken + n_skipped covers every trade generated."""
     client = _FakeClient(_make_daily_df())
-    result = run(client, ["AAPL", "MSFT"], "2024-01-01", "2025-01-01")
+    result = run(client, ["AAPL", "MSFT"], "2024-01-01", "2025-01-01",
+                 trade_fn=_DEFAULT_TRADE_FN)
     # We can't know the exact total without running the strategy separately,
     # but both counts must be non-negative and their sum >= n_taken.
     assert result["n_taken"] >= 0
@@ -151,7 +201,12 @@ def test_run_n_taken_plus_n_skipped_equals_total_trades():
 def test_run_respects_reversal_knobs():
     """Changing down_days to an impossible value (> available rows) gives 0 trades."""
     client = _FakeClient(_make_daily_df())
-    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01", down_days=999)
+    impossible_fn = partial(
+        short_term_reversal_trades,
+        down_days=999, hold=5, stop_pct=0.05, target_pct=0.10, ma=200, slip_bps=15.0,
+    )
+    result = run(client, ["AAPL"], "2024-01-01", "2025-01-01",
+                 trade_fn=impossible_fn)
     assert result["n_taken"] == 0
     assert result["final_equity"] == result["starting_equity"]
 
@@ -162,7 +217,41 @@ def test_run_respects_max_concurrent():
     client = _FakeClient(df)
     # Run the same two symbols with max_concurrent=1; one concurrent seat only.
     result = run(client, ["AAPL", "MSFT"], "2024-01-01", "2025-01-01",
-                 max_concurrent=1)
+                 trade_fn=_DEFAULT_TRADE_FN, max_concurrent=1)
     # With only 1 concurrent slot across many potential same-day entries,
     # n_skipped should be >= 0 and the result valid.
     assert result["n_taken"] + result["n_skipped"] >= result["n_taken"]
+
+
+def test_run_with_trend_pullback_trade_fn():
+    """run() with trend_pullback_trades trade_fn returns valid summary dict.
+
+    Uses a 12-bar frame that reliably triggers one trade (entry i=7, MA-break
+    exit i=11).  With starting_equity=1000 and risk_pct=0.01 the trade is
+    taken (notional = 0.01*1000/0.08 = 125 ≥ min_notional=1).
+    """
+    client = _FakeClient(_make_trend_daily_df())
+
+    trade_fn = partial(
+        trend_pullback_trades,
+        down_days=3, ma_entry=5, ma_exit=2, stop_pct=0.08, slip_bps=15.0,
+    )
+
+    result = run(
+        client, ["TPB"],
+        start="2024-01-01", end="2025-01-01",
+        trade_fn=trade_fn,
+        starting_equity=1000.0,
+        risk_pct=0.01,
+        min_notional=1.0,
+    )
+
+    required = {
+        "starting_equity", "final_equity", "total_return",
+        "n_taken", "n_skipped", "max_drawdown",
+        "worst_trade_pnl", "best_trade_pnl", "equity_curve",
+    }
+    assert required.issubset(result.keys())
+    assert result["final_equity"] > 0.0
+    # The frame has exactly 1 qualifying setup; it should be taken.
+    assert result["n_taken"] + result["n_skipped"] >= 1
