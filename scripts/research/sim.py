@@ -30,13 +30,14 @@ def make_trade(symbol, date, setup, entry, stop, exit_price, reason, bars_held,
                  round(exit_fill, 4), reason, r, bars_held)
 
 
-def simulate_exit(bars_after, entry_price, initial_stop, k=3.0):
+def simulate_exit(bars_after, entry_price, initial_stop, k=3.0, target=None):
     """Walk bars after entry; return (exit_price, reason, bars_held).
 
     Long-only. Each bar: ratchet a chandelier floor = highest_high - k*atr (never
     below initial_stop, never decreasing). Gap-through (open <= stop) fills at the
-    bar open; intrabar (low <= stop) fills at the stop; otherwise force-flat at the
-    last bar's close.
+    bar open; intrabar (low <= stop) fills at the stop; if target is set and the
+    bar's high reaches it, exit at target (stop takes precedence over target within
+    the same bar — conservative); otherwise force-flat at the last bar's close.
     """
     stop = initial_stop
     trailing = False  # True once chandelier ratchets above initial_stop
@@ -51,6 +52,8 @@ def simulate_exit(bars_after, entry_price, initial_stop, k=3.0):
         if row["low"] <= stop:
             reason = "trail" if trailing else "stop"
             return float(stop), reason, held
+        if target is not None and float(row["high"]) >= target:
+            return float(target), "target", held
         highest_high = max(highest_high, float(row["high"]))
         chandelier = highest_high - k * float(row["atr"])
         new_stop = max(stop, chandelier)
