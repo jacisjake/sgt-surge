@@ -11,6 +11,15 @@ import datetime
 import pandas as pd
 
 
+def _rsi(close, period):
+    import pandas as pd
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, 1e-9)
+    return 100 - 100 / (1 + rs)
+
+
 def overnight_drift(df: pd.DataFrame, slip_bps: float = 15.0) -> list[float]:
     """Unconditional overnight hold: buy each day's close, sell next day's open.
 
@@ -257,3 +266,112 @@ def short_term_reversal_trades(
         })
 
     return result
+
+
+def index_rsi2_trades(
+    df: pd.DataFrame,
+    symbol: str,
+    ma: int = 200,
+    rsi_buy: float = 10.0,
+    rsi_sell: float = 70.0,
+    max_hold: int = 10,
+    stop_pct: float = 0.08,
+    slip_bps: float = 15.0,
+) -> list[dict]:
+    """Mean-reversion via Connors RSI-2.
+
+    Entry on day i: close[i] > SMA(close, ma)[i] AND rsi2[i] < rsi_buy.
+    Enter at close[i].
+
+    Exit on first day j > i where:
+      1. low[j] <= entry*(1-stop_pct) → exit at stop_level (checked FIRST)
+      2. rsi2[j] > rsi_sell → exit at close[j]
+      3. j - i >= max_hold → time exit at close[j]
+    If none triggers before the end of data, exit at the last close.
+
+    Skip i where sma[i] or rsi2[i] is NaN, or i+1 >= len(df).
+
+    Returns one dict per trade: {symbol, entry_date, exit_date, return_pct, stop_pct}.
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    lows = df["low"].to_numpy()
+    sma = df["close"].rolling(ma).mean().to_numpy()
+    rsi2 = _rsi(df["close"], 2).to_numpy()
+    index = df.index
+
+    result: list[dict] = []
+    n = len(df)
+
+    for i in range(1, n - 1):
+        if pd.isna(sma[i]) or pd.isna(rsi2[i]):
+            continue
+        # Entry conditions
+        if closes[i] <= sma[i]:
+            continue
+        if rsi2[i] >= rsi_buy:
+            continue
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+
+        exit_price = None
+        exit_j = None
+
+        for j in range(i + 1, n):
+            # 1. Hard stop (checked first)
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                exit_j = j
+                break
+            # 2. RSI2 recovery exit
+            if not pd.isna(rsi2[j]) and rsi2[j] > rsi_sell:
+                exit_price = closes[j]
+                exit_j = j
+                break
+            # 3. Time exit
+            if j - i >= max_hold:
+                exit_price = closes[j]
+                exit_j = j
+                break
+
+        # Last-bar exit if nothing triggered
+        if exit_price is None:
+            exit_j = n - 1
+            exit_price = closes[exit_j]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append({
+            "symbol": symbol,
+            "entry_date": index[i].date(),
+            "exit_date": index[exit_j].date(),
+            "return_pct": ret,
+            "stop_pct": stop_pct,
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Stubs — replaced in subsequent commits
+# ---------------------------------------------------------------------------
+
+def turn_of_month_trades(
+    df,
+    symbol: str,
+    hold: int = 4,
+    stop_pct: float = 0.08,
+    slip_bps: float = 15.0,
+) -> list:
+    raise NotImplementedError("turn_of_month_trades not yet implemented")
+
+
+def breakout_52w_trades(
+    df,
+    symbol: str,
+    lookback: int = 252,
+    ma_exit: int = 50,
+    stop_pct: float = 0.08,
+    slip_bps: float = 15.0,
+) -> list:
+    raise NotImplementedError("breakout_52w_trades not yet implemented")

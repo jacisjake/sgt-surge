@@ -11,6 +11,9 @@ from scripts.research.swing.strategies import (
     short_term_reversal,
     short_term_reversal_trades,
     trend_pullback_trades,
+    index_rsi2_trades,
+    turn_of_month_trades,
+    breakout_52w_trades,
 )
 
 
@@ -540,4 +543,327 @@ def test_trend_pullback_trades_no_setup_returns_empty():
     df.index = pd.date_range("2025-01-02", periods=len(rows), freq="B", tz="America/New_York")
 
     trades = trend_pullback_trades(df, "NONE", down_days=3, ma_entry=5, ma_exit=2)
+    assert trades == []
+
+
+# ---------------------------------------------------------------------------
+# index_rsi2_trades
+# ---------------------------------------------------------------------------
+#
+# Frame design:
+#   ma=5, rsi_buy=10.0, rsi_sell=70.0, max_hold=10, stop_pct=0.08
+#
+# Seed 5 rows at 100 so SMA(5) is 100.  Then a drop to produce RSI2 < 10,
+# followed by a recovery where RSI2 > 70.
+#
+# We use a small ma=5 and rsi_buy=50.0 / rsi_sell=70.0 to keep the frame short.
+
+
+def _make_rsi2_df(trigger_stop: bool = False) -> pd.DataFrame:
+    """Build a DataFrame that triggers exactly one index_rsi2_trades entry.
+
+    ma=5, rsi_buy=50.0, rsi_sell=70.0.
+
+    Rows 0-4: seed at 100 (SMA(5) at i=4 = 100).
+    Row 5 (entry): close=105 > SMA(5)=(100+100+100+100+105)/5=101; RSI2 needs to
+        be < rsi_buy.  We create a 2-bar down move (rows 3-4 down, row 5 down more)
+        so the 2-period gain/loss calc gives a very low RSI2.
+
+    Actually simpler: use a long seed then a sharp drop then a bounce.
+    Rows 0-9: close=200 (steady, SMA(5)=200 by row 4).
+    Rows 10-11: close=180, 170 — sharp down (RSI2 will be near 0 by row 11,
+        close < SMA — this is BELOW MA, so no entry here).
+    Rows 12-15: close=210, 215, 220, 225 — recover above SMA; RSI2 near 100.
+
+    We need: close[i] > SMA(5)[i] AND RSI2[i] < rsi_buy.
+    Strategy: seed at 100 for rows 0-4, then have a 2-day dip on rows 5-6 that
+    stays ABOVE SMA(5), then entry at row 6 or 7.
+
+    Simplest controlled frame (ma=5, rsi_buy=80.0, rsi_sell=20.0 won't work).
+    Let's use the actual RSI2 formula and craft carefully.
+
+    RSI2[i] = 100 - 100/(1+gain_avg/loss_avg) over 2 bars.
+    If close[i] > close[i-1] > close[i-2]: all gain → RSI2 ≈ 100.
+    If close[i] < close[i-1] < close[i-2]: all loss → RSI2 ≈ 0.
+
+    Frame (ma=5):
+      rows 0-4: close=110 (seed SMA)
+      row 5: close=105 (down from 110 — 1 loss bar, SMA(5)=(110*4+105)/5=109 > 105: below MA)
+      row 6: close=103 (down again — still below SMA, RSI2 ≈ 0)
+      row 7: close=112 (up above SMA; RSI2 = 2-bar gain from 103→112, loss=0 → RSI2=100 → no entry)
+
+    We need close > SMA AND RSI2 < rsi_buy at the SAME bar.  After a pullback that
+    stays just above SMA:
+
+      rows 0-4: close=100
+      row 5: close=102 — SMA(5)=(100*4+102)/5=100.4; RSI2: delta=[0,0,0,0,2]; gain=1,loss=0→RSI2=100
+      That doesn't help.
+
+    BEST approach: long seed at 100, then TWO down bars that stay above SMA:
+      rows 0-9:  close=100
+      row 10: close=99.0 — SMA(5)=(100*4+99)/5=99.8 > 99: BELOW MA → skip
+      rows 0-9:  close=100
+      row 10: close=99.5 — below MA still
+
+    KEY INSIGHT: SMA lags. After rows 0-9 at 100, rows 10-11 dip to 98, 97:
+      SMA(5)[10] = (100+100+100+100+98)/5 = 99.6 > 98 → below MA at row 10
+      SMA(5)[11] = (100+100+100+98+97)/5 = 99.0 > 97 → below MA at row 11
+
+    So pure dips go below SMA.  We need a shallow dip.
+
+    SOLUTION: Large MA so SMA barely moves. ma=20, seed 20 rows at 100.
+    Rows 20-21: close=98,96 (dip — SMA(20)[21]≈(19*100+98+96... wait need 20 rows))
+    SMA(20)[20] = (100*19+98)/20 = 99.9; 98 < 99.9 → below MA.
+
+    Hard constraint: close[i] > SMA[i] when RSI2[i] is low.
+
+    The only way this happens: the RSI2 dip is smaller than the SMA gap.
+    E.g. close=102, SMA=101, but 2-bar RSI shows weakness.
+
+    SIMPLEST: close[i] > SMA[i] is satisfied (price is above long-run avg),
+    but short-term RSI2 is pulled down by a recent 1-bar drop from a high:
+      close[i-1] = 110 (high bar), close[i] = 105 (dip), SMA[i] = 100 (still below close).
+      delta[i] = -5 (loss). delta[i-1] = +10 (gain).
+      gain_avg = 0.0 (rolling 2 mean of [10, -5... wait clip lower=0 → [10, 0])/2=5)
+      loss_avg = rolling 2 mean of [-delta clipped upper=0 → [0, 5])/2 = 2.5
+      RSI2 = 100 - 100/(1+5/2.5) = 100 - 100/3 = 66.7  -- not < 50
+
+    Let me try: close goes 100, 100, 100, 100, 100, 120, 102 (seed at 100×5, spike to 120, drop to 102):
+      SMA(5)[6] = (100+100+100+120+102)/5 = 104.4 > 102 → below MA. Doh.
+
+    With seed=100 × many, then spike+drop staying above seed:
+      seed_level=100 × 20, then close[20]=115 (above SMA≈100+δ), close[21]=108:
+      SMA(5)[20]=(100+100+100+100+115)/5=103, 115>103 ✓
+      SMA(5)[21]=(100+100+100+115+108)/5=104.6, 108>104.6 ✓
+      RSI2[21]: delta[20]=+15, delta[21]=-7.  gain_avg=(15+0)/2=7.5, loss_avg=(0+7)/2=3.5
+      RSI2=100-100/(1+7.5/3.5)=100-100/3.14≈68.2 — still not low enough for rsi_buy=50
+
+    Try bigger spike and bigger drop:
+      seed=100×20, close[20]=140, close[21]=105:
+      delta[20]=+40, delta[21]=-35. gain=(40+0)/2=20, loss=(0+35)/2=17.5
+      RSI2=100-100/(1+20/17.5)=100-100/2.14≈53.3  -- closer but still >50
+
+      close[21]=100: delta=-40. gain=(40+0)/2=20, loss=(0+40)/2=20
+      RSI2=100-100/(1+1)=50.0  -- exactly 50, need <50
+
+      close[21]=99: delta=-41. gain=(40+0)/2=20, loss=(0+41)/2=20.5
+      RSI2=100-100/(1+20/20.5)=100-100/1.976≈49.4 < 50 ✓
+      SMA(5)[21]=(100+100+100+140+99)/5=107.8, 99<107.8 → BELOW MA
+
+    The problem: after a big spike, the SMA is elevated and the dip goes below it.
+
+    USE MULTI-BAR SEED AT HIGHER LEVEL so SMA stays low relative to dip:
+    seed=200×20 rows. Then close[20]=240 (spike, SMA=(200×4+240)/5=208, 240>208 ✓)
+    close[21]=205 (dip): SMA=(200×3+240+205)/5=209, 205<209 → BELOW again.
+
+    CONCLUSION: We need rsi_buy > 50 to make the test tractable without
+    a very elaborate frame.  The spec says default rsi_buy=10.0 but the TESTS
+    can use any rsi_buy value.  Using rsi_buy=80 is fine for the test.
+
+    Frame with rsi_buy=80:
+    seed=100×20, close[20]=140, close[21]=102:
+      delta[20]=+40, delta[21]=-38. gain=(40+0)/2=20, loss=(0+38)/2=19
+      RSI2=100-100/(1+20/19)=100-100/2.053≈51.3 < 80 ✓
+      SMA(5)[21]=(100+100+100+140+102)/5=108.4. 102 < 108.4 → BELOW MA :(
+
+    The only clean solution: use a frame where close NEVER dips below SMA
+    but RSI2 dips below rsi_buy.  This requires close > SMA even during the dip.
+
+    If seed=100 flat for 20 rows, SMA(5)≈100.  Then have close stay above 100:
+    close[20]=103 (small up), close[21]=101 (small dip):
+      SMA(5)[21]=(100+100+100+103+101)/5=100.8, 101>100.8 ✓
+      delta[20]=+3, delta[21]=-2. gain=(3+0)/2=1.5, loss=(0+2)/2=1.0
+      RSI2=100-100/(1+1.5/1.0)=100-40=60. Not very low.
+
+    close[20]=110 (big up), close[21]=101 (dip back):
+      SMA(5)[21]=(100+100+100+110+101)/5=102.2. 101 < 102.2 → BELOW MA :(
+
+    The fundamental tension: a dip that's sharp enough to make RSI2 low
+    will also push price below a lagging SMA.
+
+    REAL SOLUTION used in practice: the initial ENTRY bar must be AFTER the dip
+    has recovered somewhat. The entry fires when RSI2 < rsi_buy AND close > SMA.
+    This means: buy on the DOWN bar only if close is still above SMA.
+
+    Frame that works (ma=5, rsi_buy=80):
+    rows 0-19: close=100 (flat seed, SMA(5)=100 by row 4)
+    row 20: close=108 (UP — RSI2 spikes to ~100)
+    row 21: close=104 (DOWN — RSI2 dips)
+      SMA(5)[21] = (100+100+100+108+104)/5 = 102.4, 104 > 102.4 ✓
+      delta[20]=+8, delta[21]=-4. gain_avg=(8+0)/2=4, loss_avg=(0+4)/2=2
+      RSI2 = 100 - 100/(1+4/2) = 100 - 100/3 ≈ 66.7 < 80 ✓
+    row 22: close=112 (UP — RSI2 recovers above rsi_sell=70)
+      delta[22]=+8. gain_avg=(0+8)/2=4, loss_avg=(4+0)/2=2 →
+        Wait: gain=clip(delta, lower=0).rolling(2).mean()
+        delta series at [21,22]: [-4, +8]. clip(lower=0): [0, 8]. rolling(2).mean(): (0+8)/2=4
+        loss series: clip(upper=0) negated: [4, 0]. rolling(2).mean(): (4+0)/2=2
+        RSI2[22] = 100 - 100/(1+4/2) = 66.7. Not > 70.
+
+    row 22: close=115:
+      delta[22]=+11. gain_avg=(0+11)/2=5.5, loss_avg=(4+0)/2=2
+      RSI2=100-100/(1+5.5/2)=100-100/3.75=73.3 > 70 ✓
+
+    So entry at row 21 (close=104 > SMA=102.4, RSI2≈66.7 < 80),
+    exit at row 22 (RSI2≈73.3 > 70).
+    return_pct = close[22]/close[21] - 1 - slip = 115/104 - 1 - slip ≈ 0.1058 - slip
+    """
+    closes = (
+        [100.0] * 20       # seed
+        + [108.0]          # row 20: up
+        + [104.0]          # row 21: entry (close > SMA, RSI2 < 80)
+        + [115.0]          # row 22: RSI2 > 70 → exit
+        + [116.0, 117.0]   # extra rows
+    )
+    rows = []
+    for c in closes:
+        if trigger_stop:
+            # make the bar after entry (row 22) a hard-stop bar
+            # entry=104, stop_pct=0.08, stop_level=95.68
+            # but row 22 already has close=115 > stop — need different stop_pct
+            # Instead we'll set a very tight stop so stop triggers on row 22
+            low = c - 20.0  # will push below stop for tight stop test
+        else:
+            low = c - 1.0
+        rows.append({
+            "open":   c + 0.1,
+            "high":   c + 1.0,
+            "low":    low,
+            "close":  c,
+            "volume": 1_000_000,
+        })
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=len(rows), freq="B", tz="America/New_York")
+    return df
+
+
+def test_index_rsi2_trades_rsi_recovery_exit():
+    """Entry fires when close > SMA and RSI2 < rsi_buy; exits on RSI2 > rsi_sell.
+
+    Frame: seed 20 bars at 100, spike to 108 (row 20), dip to 104 (row 21 = entry),
+    recover to 115 (row 22 = exit on RSI2 recovery).
+
+    ma=5, rsi_buy=80, rsi_sell=70. slip_bps=15.
+    """
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    rsi_buy = 80.0
+    rsi_sell = 70.0
+    stop_pct = 0.08
+    ma = 5
+
+    df = _make_rsi2_df(trigger_stop=False)
+    trades = index_rsi2_trades(
+        df, "RSI2", ma=ma, rsi_buy=rsi_buy, rsi_sell=rsi_sell,
+        stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    # Expect at least 1 trade
+    assert len(trades) >= 1
+
+    # Verify required keys
+    required = {"symbol", "entry_date", "exit_date", "return_pct", "stop_pct"}
+    for t in trades:
+        assert required.issubset(t.keys())
+        assert t["symbol"] == "RSI2"
+        assert isinstance(t["entry_date"], datetime.date)
+        assert isinstance(t["exit_date"], datetime.date)
+        assert t["stop_pct"] == stop_pct
+
+    # Find the trade entered at row 21 — verify it exits on RSI2 recovery (row 22)
+    # index[21] with date_range starting 2025-01-02, freq=B:
+    # 0=Jan2, 1=Jan3, 2=Jan6, 3=Jan7, 4=Jan8, 5=Jan9, 6=Jan10, 7=Jan13,
+    # 8=Jan14, 9=Jan15, 10=Jan16, 11=Jan17, 12=Jan20, 13=Jan21, 14=Jan22,
+    # 15=Jan23, 16=Jan24, 17=Jan27, 18=Jan28, 19=Jan29, 20=Jan30, 21=Jan31
+    # 22=Feb3
+    entry_date_expected = datetime.date(2025, 1, 31)   # index[21]
+    exit_date_expected  = datetime.date(2025, 2, 3)    # index[22]
+
+    entry_trades = [t for t in trades if t["entry_date"] == entry_date_expected]
+    assert len(entry_trades) == 1, (
+        f"Expected 1 trade at entry {entry_date_expected}, got {entry_trades}"
+    )
+    t = entry_trades[0]
+    assert t["exit_date"] == exit_date_expected, (
+        f"Expected exit on {exit_date_expected}, got {t['exit_date']}"
+    )
+
+    # Return: exit at close[22]=115, entry=104
+    expected_ret = 115.0 / 104.0 - 1.0 - slip
+    assert abs(t["return_pct"] - expected_ret) < 1e-10, (
+        f"return_pct {t['return_pct']:.8f} != {expected_ret:.8f}"
+    )
+
+
+def test_index_rsi2_trades_hard_stop():
+    """When the bar after entry has a low <= stop_level, trade exits at stop price.
+
+    Use a tight stop_pct=0.001 so stop_level is very close to entry, and the
+    next bar's low (c-20) blows through it.
+    """
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.001   # very tight: stop_level = entry * 0.999
+    rsi_buy = 80.0
+    rsi_sell = 70.0
+    ma = 5
+
+    df = _make_rsi2_df(trigger_stop=False)  # lows = c-1 everywhere
+    # Reuse the same frame but with tight stop so low[22] = 115-1 = 114 > 104*0.999=103.896
+    # That doesn't trigger.  Build a custom frame where entry bar's next low < stop.
+    # entry close = 104, stop_level = 104 * (1-0.001) = 103.896
+    # low[22] needs to be <= 103.896.  Set low[22] = 103.0 by making it c-12.
+
+    # Rebuild rows manually with low[22] = 103
+    closes = (
+        [100.0] * 20       # seed
+        + [108.0]          # row 20: up
+        + [104.0]          # row 21: entry
+        + [115.0]          # row 22: RSI2 recovery — but we force stop here
+        + [116.0, 117.0]   # extra
+    )
+    rows = []
+    for idx, c in enumerate(closes):
+        low = 103.0 if idx == 22 else c - 1.0   # row 22 breaches tight stop
+        rows.append({
+            "open":  c + 0.1,
+            "high":  c + 1.0,
+            "low":   low,
+            "close": c,
+            "volume": 1_000_000,
+        })
+    df2 = pd.DataFrame(rows)
+    df2.index = pd.date_range("2025-01-02", periods=len(rows), freq="B", tz="America/New_York")
+
+    trades = index_rsi2_trades(
+        df2, "STOP", ma=ma, rsi_buy=rsi_buy, rsi_sell=rsi_sell,
+        stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+    assert len(trades) >= 1
+
+    entry_date_expected = datetime.date(2025, 1, 31)  # index[21]
+    entry_trades = [t for t in trades if t["entry_date"] == entry_date_expected]
+    assert len(entry_trades) == 1
+
+    t = entry_trades[0]
+    entry = 104.0
+    stop_level = entry * (1.0 - stop_pct)
+    # low[22] = 103.0 <= 103.896 → stop triggered
+    assert t["exit_date"] == datetime.date(2025, 2, 3)   # index[22]
+    expected_ret = stop_level / entry - 1.0 - slip
+    assert abs(t["return_pct"] - expected_ret) < 1e-10, (
+        f"return_pct {t['return_pct']:.8f} != {expected_ret:.8f}"
+    )
+
+
+def test_index_rsi2_trades_no_setup():
+    """A flat frame above SMA never has RSI2 < rsi_buy, so no trades are generated."""
+    # flat close = 105 for 30 rows: SMA = 105, RSI2 = 50 (neutral) which is > 10.0
+    rows = [
+        {"open": 104.9, "high": 106.0, "low": 104.0, "close": 105.0, "volume": 1_000_000}
+        for _ in range(30)
+    ]
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=30, freq="B", tz="America/New_York")
+
+    trades = index_rsi2_trades(df, "FLAT", ma=5, rsi_buy=10.0, rsi_sell=70.0)
     assert trades == []
