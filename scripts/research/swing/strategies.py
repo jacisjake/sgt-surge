@@ -1,0 +1,96 @@
+"""Pure strategy functions over daily OHLCV DataFrames.
+
+Each function accepts a DataFrame with columns open/high/low/close/volume and
+a DatetimeIndex, and returns list[float] of per-trade fractional returns after
+slippage.  Slippage is applied as 2 * slip_bps / 10_000 (entry + exit crossing).
+"""
+from __future__ import annotations
+
+import pandas as pd
+
+
+def overnight_drift(df: pd.DataFrame, slip_bps: float = 15.0) -> list[float]:
+    """Unconditional overnight hold: buy each day's close, sell next day's open.
+
+    Trade return = open[i+1]/close[i] - 1 - 2*slip.  One trade per night.
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    opens = df["open"].to_numpy()
+    result: list[float] = []
+    for i in range(len(df) - 1):
+        ret = opens[i + 1] / closes[i] - 1.0 - slip
+        result.append(ret)
+    return result
+
+
+def short_term_reversal(
+    df: pd.DataFrame,
+    down_days: int = 3,
+    hold: int = 5,
+    stop_pct: float = 0.05,
+    target_pct: float = 0.10,
+    ma: int = 200,
+    slip_bps: float = 15.0,
+) -> list[float]:
+    """Buy oversold dips in an uptrend, exit on stop/target/time.
+
+    Entry on day i when:
+      - close[i] > SMA(close, ma)[i]  (uptrend filter)
+      - the last `down_days` closes are strictly decreasing:
+        close[i] < close[i-1] < ... < close[i-down_days]
+
+    Enter at close[i].  Over days i+1 .. i+hold:
+      - if low[j] <= entry*(1-stop_pct): exit at entry*(1-stop_pct)  (checked first)
+      - elif high[j] >= entry*(1+target_pct): exit at entry*(1+target_pct)
+      - after `hold` days with neither: exit at close[i+hold].
+
+    Trade return = exit/entry - 1 - 2*slip.  Trades may overlap.
+    Skip entries where i < ma (not enough SMA history) or i+1 >= len(df).
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    sma = df["close"].rolling(ma).mean().to_numpy()
+
+    result: list[float] = []
+    n = len(df)
+
+    for i in range(down_days, n - 1):
+        # Need valid SMA (rolling(ma) is NaN for first ma-1 rows)
+        if pd.isna(sma[i]):
+            continue
+
+        # Uptrend filter
+        if closes[i] <= sma[i]:
+            continue
+
+        # Strictly decreasing closes: close[i] < close[i-1] < ... < close[i-down_days]
+        decreasing = all(
+            closes[i - k] < closes[i - k - 1] for k in range(down_days)
+        )
+        if not decreasing:
+            continue
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+        target_level = entry * (1.0 + target_pct)
+
+        exit_price = None
+        for j in range(i + 1, min(i + 1 + hold, n)):
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                break
+            if highs[j] >= target_level:
+                exit_price = target_level
+                break
+        if exit_price is None:
+            # time exit: close at end of hold period (j = i+hold, but capped at n-1)
+            exit_idx = min(i + hold, n - 1)
+            exit_price = closes[exit_idx]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append(ret)
+
+    return result
