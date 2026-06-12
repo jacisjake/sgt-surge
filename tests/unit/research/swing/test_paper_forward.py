@@ -78,3 +78,51 @@ def test_save_state_pretty_json(tmp_path):
     # valid JSON
     loaded = json.loads(text)
     assert loaded["starting_equity"] == 200.0
+
+
+# ---------------------------------------------------------------------------
+# is_fresh_breakout
+# ---------------------------------------------------------------------------
+
+def _make_breakout_arrays(lookback: int = 10):
+    """Return (highs, closes) for is_fresh_breakout tests.
+
+    Bars 0-8:  high=close=100 (seed — all below 100-level after we tweak bar 9).
+    Bar 9:     high=99, close=99   ← slightly lower so close[9] < max(high[0:9])=100.
+    Bar 10:    high=102, close=101 ← fresh breakout: close >= max(high[0:10])=100
+                                      AND close[9]=99 < max(high[0:9])=100.
+    Bar 11:    high=103, close=102 ← continuation: prev bar (10) WAS already at new high.
+    Bar 12:    high=90,  close=90  ← below prior highs, clearly not a breakout.
+    """
+    highs  = [100.0]*9 + [99.0, 102.0, 103.0, 90.0]
+    closes = [100.0]*9 + [99.0, 101.0, 102.0, 90.0]
+    return highs, closes
+
+
+def test_is_fresh_breakout_true_on_first_new_high():
+    highs, closes = _make_breakout_arrays()
+    # i=10 is the first fresh breakout bar
+    assert is_fresh_breakout(highs, closes, i=10, lookback=10) is True
+
+
+def test_is_fresh_breakout_false_on_continuation():
+    highs, closes = _make_breakout_arrays()
+    # i=11: close[10]=101 >= max(high[0:10])=100 → prior bar already at new high
+    assert is_fresh_breakout(highs, closes, i=11, lookback=10) is False
+
+
+def test_is_fresh_breakout_false_below_prior_highs():
+    highs, closes = _make_breakout_arrays()
+    # i=12: close=90 < max(high[2:12])=103 → not at new high at all
+    assert is_fresh_breakout(highs, closes, i=12, lookback=10) is False
+
+
+def test_is_fresh_breakout_guard_start_of_array():
+    """When i-lookback-1 < 0, the prior-window check uses max(high[0:i-1])."""
+    # Use a short array where i-lookback-1 would be negative
+    highs  = [100.0, 99.0, 101.0]
+    closes = [100.0, 99.0, 101.0]
+    # i=2, lookback=2: window_cur = high[0:2]=[100,99], max=100; close[2]=101>=100 ✓
+    # prior window: i-1-lookback = 2-1-2=-1 → guard to 0, max(high[0:1])=[100], max=100
+    # close[1]=99 < 100 → fresh breakout
+    assert is_fresh_breakout(highs, closes, i=2, lookback=2) is True
