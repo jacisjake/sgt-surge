@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 from scripts.research.metrics import summarize
@@ -97,7 +98,7 @@ def main(argv=None) -> int:
         callback_url=cfg.schwab_oauth_redirect_uri,
         token_path=cfg.schwab_token_path,
     )
-    run(client, symbols, args.start, args.end,
+    run(client, symbols, date.fromisoformat(args.start), date.fromisoformat(args.end),
         slip_bps=args.slip_bps, n_min=args.n_min)
     return 0
 
