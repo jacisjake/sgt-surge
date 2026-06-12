@@ -93,3 +93,39 @@ available. **Pre-live: confirm fractional is API-executable** (then drop the
   equity curve & worst losing streak; (2) wire `short_term_reversal` into the bot in
   `dry_run` for out-of-sample forward testing; (3) confirm fractional execution.
   **No real money until it proves out forward.**
+
+---
+
+## Update (2026-06-12) — broadened the search → a better winner
+
+Tunnel-vision check: the above stayed inside the mean-reversion family. Broadened to
+distinct mechanisms, blind-tested on a 65-name sector-diverse universe (1% risk).
+
+**Run 4 — distinct archetypes (blind, broad universe):**
+
+| strategy | mechanism | bull 24-26 | maxDD | note |
+|---|---|---|---|---|
+| index_rsi2 | index mean-reversion | +3.5% | 3.5% | real but tiny |
+| turn_of_month | calendar | -6.2% | 14.9% | dead |
+| **breakout_52w** | **new-high momentum** | **+48–55%** | **~10%** | **winner** |
+
+Also re-confirmed: **trend-following dip-buy FAILS the blind test** (−12.8% on broad,
+the +1.5%/trade was hindsight curation). short_term_reversal deeper-streak (5 down,
+hold 10) does hold blind: +14.6% / 6.6% DD at 1%.
+
+**52-week-high breakout — full kill-test (warmup 2023, trades 2024-26, ~2yr, base
+lookback 252 / exit<50ma / 1% risk):**
+- Return **+55%**, maxDD **9.8%**, 77 trades.
+- **Concentration: PASSED** — 34 distinct winning symbols, top-3 trades = 10% of gross
+  profit, biggest winners are INTC/CAT/AMD/GOOGL (not AI darlings). Broad, not monsters.
+- **Slippage:** +45.9% at 30bps.
+- **Param robustness:** every variant positive — lookback 126 (+92%) & 252 (+55%),
+  exit MA 20/50/100, stop. Base (252/50) chosen as robust middle (NOT the 126 cherry-pick).
+
+**Caveat:** validated in the 2024-26 regime only (per direction to drop 2022). Bear
+behavior unknown; the MA-exit trail is the built-in regime insurance.
+
+**New verdict:** the edge is **momentum, expressed as systematic new-high breakouts** —
+not buy-and-hold (tail risk) and not dip-buy (fails blind). `breakout_52w` (base config)
+is the strategy to **forward-test** in dry-run. short_term_reversal remains a validated
+lower-return/lower-DD fallback.
