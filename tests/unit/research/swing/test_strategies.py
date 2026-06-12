@@ -1027,3 +1027,183 @@ def test_turn_of_month_hard_stop():
     )
     expected_ret = stop_level / entry - 1.0 - slip
     assert abs(t1["return_pct"] - expected_ret) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# breakout_52w_trades
+# ---------------------------------------------------------------------------
+#
+# Strategy: enter on the FIRST bar of a 52-week high breakout (close >= max
+# of prior `lookback` highs, but previous bar was NOT already at a new high).
+# Exit: hard stop OR close < SMA(close, ma_exit).
+#
+# Frame design: We keep lookback small (lookback=10) so the test frame is short.
+# - 10 seed bars (index 0-9) with high=100.
+# - Bar 10: close=101, high=102 — NEW high (close >= max(high[0:10])=100). Entry here.
+# - Bar 11: close=102, high=103 — still at new high, but previous bar (10) WAS
+#   already a new high → NOT a fresh breakout → no entry.
+# - Bar 12: close=80 — close drops below SMA(ma_exit) → exit.
+
+
+def _make_breakout_df(trigger_stop: bool = False) -> pd.DataFrame:
+    """Frame for breakout_52w tests.  lookback=10, ma_exit=3.
+
+    seed: bars 0-9, close=high=100.
+    bar 10: breakout bar (close=101 >= max(high[0:10])=100).
+             AND bar 9 was NOT a breakout (close[9]=100 < max(high[0:9])=100 is FALSE
+             — actually 100 >= 100 is True.  Need bar 9 to fail "new high" check.
+             Condition for fresh breakout at i=10:
+               close[10] >= max(high[10-lookback : 10])  = max(high[0:10]) = 100 → 101 >= 100 ✓
+               close[9] < max(high[9-lookback : 9])      = max(high[-1:9])  → wraps, skip
+               Actually: prior bar NOT already at new high means:
+               close[i-1] < max(high[i-1-lookback : i-1])
+               close[9] < max(high[9-10 : 9]) = max(high[0:9]) = 100. But close[9]=100 < 100? NO.
+
+    For i=10 (lookback=10):
+      window_current = high[0:10] (indices 0..9), max = 100.
+      close[10] >= 100 ✓
+      prior window = high[0:9] (indices 0..8), max = 100.
+      close[9] >= 100 — so prior bar IS already at new high → NOT a fresh breakout at i=10!
+
+    We need close[9] < max(high[0:9]) to make bar 10 a fresh breakout.
+    Solution: set high[9]=99 (lower high on the last seed bar):
+      window_current at i=10: max(high[0:10]) = max([100]*9 + [99]) = 100.
+      close[10] >= 100 ✓
+      prior window at i=10: max(high[0:9]) = max([100]*9) = 100.
+      close[9] < 100? close[9] = 99 < 100 ✓  → fresh breakout at i=10!
+
+    bar 11: close=102, high=103 — still a new high. Previous bar (10) WAS at new high
+      (close[10]=101 >= max(high[0:10])=100) → NOT fresh breakout at i=11 ✓
+
+    bar 12: close=95 (drop) — SMA(3)[12] = (101+102+95)/3 = 99.33, 95 < 99.33 → MA-exit.
+    low[12] = 94 > stop_level=92.92, so hard stop does NOT fire first.
+    """
+    closes_highs = [
+        # (close, high)
+        (100.0, 100.0),  # 0
+        (100.0, 100.0),  # 1
+        (100.0, 100.0),  # 2
+        (100.0, 100.0),  # 3
+        (100.0, 100.0),  # 4
+        (100.0, 100.0),  # 5
+        (100.0, 100.0),  # 6
+        (100.0, 100.0),  # 7
+        (100.0, 100.0),  # 8
+        (99.0,  99.0),   # 9: slightly lower so close[9] < max(high[0:9])=100
+        (101.0, 102.0),  # 10: fresh breakout ← entry
+        (102.0, 103.0),  # 11: still-new-high but NOT fresh
+        (95.0,  96.0),   # 12: MA-exit bar (low=94 > stop=92.92; close < SMA3)
+        (94.0,  95.0),   # 13: extra
+    ]
+
+    rows = []
+    entry_close = 101.0
+    stop_level = entry_close * (1 - 0.08)  # 92.92
+
+    for idx, (c, h) in enumerate(closes_highs):
+        if trigger_stop and idx == 11:
+            low = stop_level - 1.0  # force stop on first post-entry bar
+        else:
+            low = c - 1.0
+        rows.append({
+            "open":   c - 0.1,
+            "high":   h,
+            "low":    low,
+            "close":  c,
+            "volume": 1_000_000,
+        })
+
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=len(rows), freq="B", tz="America/New_York")
+    return df
+
+
+def test_breakout_52w_enters_on_first_breakout_bar():
+    """Exactly one trade fires, entered at the first (fresh) breakout bar."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    lookback = 10
+    ma_exit = 3
+    stop_pct = 0.08
+
+    df = _make_breakout_df(trigger_stop=False)
+    trades = breakout_52w_trades(
+        df, "BRK", lookback=lookback, ma_exit=ma_exit,
+        stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+
+    assert len(trades) == 1, f"Expected 1 trade, got {len(trades)}: {trades}"
+
+    t = trades[0]
+    required = {"symbol", "entry_date", "exit_date", "return_pct", "stop_pct"}
+    assert required.issubset(t.keys())
+    assert t["symbol"] == "BRK"
+    assert t["stop_pct"] == stop_pct
+    assert isinstance(t["entry_date"], datetime.date)
+    assert isinstance(t["exit_date"], datetime.date)
+
+    # Entry at index 10 → 2025-01-14 (0=Jan2,1=Jan3,2=Jan6,...,10=Jan16)
+    # date_range 2025-01-02 freq=B: 0=Jan2,1=Jan3,2=Jan6,3=Jan7,4=Jan8,
+    # 5=Jan9,6=Jan10,7=Jan13,8=Jan14,9=Jan15,10=Jan16
+    entry_expected = datetime.date(2025, 1, 16)
+    assert t["entry_date"] == entry_expected, (
+        f"Expected entry on {entry_expected}, got {t['entry_date']}"
+    )
+
+    # Exit at bar 12 (close=95 < SMA3=99.33; low=94 > stop=92.92 so MA exit fires),
+    # index 12 → 2025-01-20
+    exit_expected = datetime.date(2025, 1, 20)
+    assert t["exit_date"] == exit_expected, (
+        f"Expected exit on {exit_expected}, got {t['exit_date']}"
+    )
+
+    # return_pct = close[12]/close[10] - 1 - slip = 95/101 - 1 - slip
+    # Note: close[12]=95 changed from 80 so stop (92.92) does not fire first.
+    expected_ret = 95.0 / 101.0 - 1.0 - slip
+    assert abs(t["return_pct"] - expected_ret) < 1e-10
+
+
+def test_breakout_52w_no_reentry_on_continuation():
+    """The bar after the first breakout does NOT generate a second trade."""
+    df = _make_breakout_df(trigger_stop=False)
+    trades = breakout_52w_trades(
+        df, "BRK", lookback=10, ma_exit=3, stop_pct=0.08,
+    )
+    # Only 1 trade: bar 11 is continuation, not fresh breakout
+    assert len(trades) == 1
+
+
+def test_breakout_52w_hard_stop():
+    """When first post-entry bar has low <= stop_level, exits at stop."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    stop_pct = 0.08
+
+    df = _make_breakout_df(trigger_stop=True)
+    trades = breakout_52w_trades(
+        df, "STOP", lookback=10, ma_exit=3, stop_pct=stop_pct, slip_bps=slip_bps,
+    )
+    assert len(trades) >= 1
+    t = trades[0]
+
+    entry = 101.0
+    stop_level = entry * (1.0 - stop_pct)
+    # Stop fires at index 11 = 2025-01-17
+    assert t["exit_date"] == datetime.date(2025, 1, 17), (
+        f"Expected stop exit on 2025-01-17, got {t['exit_date']}"
+    )
+    expected_ret = stop_level / entry - 1.0 - slip
+    assert abs(t["return_pct"] - expected_ret) < 1e-10
+
+
+def test_breakout_52w_no_breakout():
+    """Flat closes never reach a new high → no trades."""
+    rows = [
+        {"open": 99.9, "high": 100.0, "low": 99.0, "close": 100.0, "volume": 1_000_000}
+        for _ in range(20)
+    ]
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=20, freq="B", tz="America/New_York")
+
+    trades = breakout_52w_trades(df, "FLAT", lookback=10, ma_exit=3, stop_pct=0.08)
+    assert trades == []

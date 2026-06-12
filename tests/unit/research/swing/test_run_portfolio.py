@@ -255,3 +255,174 @@ def test_run_with_trend_pullback_trade_fn():
     assert result["final_equity"] > 0.0
     # The frame has exactly 1 qualifying setup; it should be taken.
     assert result["n_taken"] + result["n_skipped"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# New strategy imports (added with commit 3)
+# ---------------------------------------------------------------------------
+from scripts.research.swing.strategies import (
+    index_rsi2_trades,
+    turn_of_month_trades,
+    breakout_52w_trades,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helper frames for new strategies
+# ---------------------------------------------------------------------------
+
+def _make_rsi2_daily_df() -> pd.DataFrame:
+    """Frame that triggers index_rsi2_trades (ma=5, rsi_buy=80, rsi_sell=70).
+
+    20 seed bars at 100, then spike to 108, dip to 104 (entry), recover to 115.
+    """
+    closes = [100.0] * 20 + [108.0, 104.0, 115.0, 116.0, 117.0]
+    rows = [
+        {
+            "open":   c + 0.1,
+            "high":   c + 1.0,
+            "low":    c - 1.0,
+            "close":  c,
+            "volume": 1_000_000,
+        }
+        for c in closes
+    ]
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2024-01-02", periods=len(rows), freq="B", tz="America/New_York")
+    return df
+
+
+def _make_turn_of_month_daily_df() -> pd.DataFrame:
+    """Frame that spans 2 month-ends (Jan 31 + Feb 28) to trigger 2 turn-of-month trades."""
+    dates_and_closes = [
+        ("2024-01-28", 98.0), ("2024-01-29", 99.0), ("2024-01-30", 100.5),
+        ("2024-01-31", 100.0),   # entry 1
+        ("2024-02-01", 101.0), ("2024-02-02", 102.0), ("2024-02-05", 103.0),
+        ("2024-02-06", 104.0),   # exit 1
+        ("2024-02-26", 104.5), ("2024-02-27", 104.8),
+        ("2024-02-29", 105.0),   # entry 2 (2024 is leap year, Feb 29 exists)
+        ("2024-03-01", 106.0), ("2024-03-04", 107.0), ("2024-03-05", 108.0),
+        ("2024-03-06", 109.0),   # exit 2
+    ]
+    rows = []
+    for _, c in dates_and_closes:
+        rows.append({
+            "open": c + 0.1, "high": c + 1.0, "low": c - 1.0,
+            "close": c, "volume": 1_000_000,
+        })
+    df = pd.DataFrame(rows)
+    df.index = pd.DatetimeIndex(
+        pd.to_datetime([d for d, _ in dates_and_closes]).tz_localize("America/New_York")
+    )
+    return df
+
+
+def _make_breakout_daily_df() -> pd.DataFrame:
+    """Frame that triggers exactly 1 breakout_52w_trades entry (lookback=10, ma_exit=3).
+
+    10 seed bars at 100, bar 9 at 99, bar 10 breaks out to 101,
+    bar 11 still up, bar 12 drops below SMA(3) → exit.
+    """
+    closes_highs = (
+        [(100.0, 100.0)] * 9
+        + [(99.0, 99.0)]
+        + [(101.0, 102.0), (102.0, 103.0), (95.0, 96.0), (94.0, 95.0)]
+    )
+    rows = []
+    for c, h in closes_highs:
+        rows.append({
+            "open": c - 0.1, "high": h, "low": c - 1.0,
+            "close": c, "volume": 1_000_000,
+        })
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2024-01-02", periods=len(rows), freq="B", tz="America/New_York")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Tests for new strategies wired into run()
+# ---------------------------------------------------------------------------
+
+def test_run_with_index_rsi2_trade_fn():
+    """run() with index_rsi2_trades returns valid summary dict with at least 1 trade."""
+    client = _FakeClient(_make_rsi2_daily_df())
+
+    trade_fn = partial(
+        index_rsi2_trades,
+        ma=5, rsi_buy=80.0, rsi_sell=70.0, max_hold=10,
+        stop_pct=0.08, slip_bps=15.0,
+    )
+
+    result = run(
+        client, ["RSI2"],
+        start="2024-01-01", end="2025-01-01",
+        trade_fn=trade_fn,
+        starting_equity=1000.0,
+        risk_pct=0.01,
+        min_notional=1.0,
+    )
+
+    required = {
+        "starting_equity", "final_equity", "total_return",
+        "n_taken", "n_skipped", "max_drawdown",
+        "worst_trade_pnl", "best_trade_pnl", "equity_curve",
+    }
+    assert required.issubset(result.keys())
+    assert result["final_equity"] > 0.0
+    assert result["n_taken"] + result["n_skipped"] >= 1
+
+
+def test_run_with_turn_of_month_trade_fn():
+    """run() with turn_of_month_trades returns valid summary dict."""
+    client = _FakeClient(_make_turn_of_month_daily_df())
+
+    trade_fn = partial(
+        turn_of_month_trades,
+        hold=4, stop_pct=0.08, slip_bps=15.0,
+    )
+
+    result = run(
+        client, ["TOM"],
+        start="2024-01-01", end="2025-01-01",
+        trade_fn=trade_fn,
+        starting_equity=1000.0,
+        risk_pct=0.01,
+        min_notional=1.0,
+    )
+
+    required = {
+        "starting_equity", "final_equity", "total_return",
+        "n_taken", "n_skipped", "max_drawdown",
+        "worst_trade_pnl", "best_trade_pnl", "equity_curve",
+    }
+    assert required.issubset(result.keys())
+    assert result["final_equity"] > 0.0
+    assert result["n_taken"] + result["n_skipped"] >= 2
+
+
+def test_run_with_breakout_52w_trade_fn():
+    """run() with breakout_52w_trades returns valid summary dict."""
+    client = _FakeClient(_make_breakout_daily_df())
+
+    trade_fn = partial(
+        breakout_52w_trades,
+        lookback=10, ma_exit=3, stop_pct=0.08, slip_bps=15.0,
+    )
+
+    result = run(
+        client, ["BRK"],
+        start="2024-01-01", end="2025-01-01",
+        trade_fn=trade_fn,
+        starting_equity=1000.0,
+        risk_pct=0.01,
+        min_notional=1.0,
+    )
+
+    required = {
+        "starting_equity", "final_equity", "total_return",
+        "n_taken", "n_skipped", "max_drawdown",
+        "worst_trade_pnl", "best_trade_pnl", "equity_curve",
+    }
+    assert required.issubset(result.keys())
+    assert result["final_equity"] > 0.0
+    assert result["n_taken"] + result["n_skipped"] >= 1

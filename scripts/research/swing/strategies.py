@@ -412,16 +412,81 @@ def turn_of_month_trades(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Stub — replaced in subsequent commit
-# ---------------------------------------------------------------------------
-
 def breakout_52w_trades(
-    df,
+    df: pd.DataFrame,
     symbol: str,
     lookback: int = 252,
     ma_exit: int = 50,
     stop_pct: float = 0.08,
     slip_bps: float = 15.0,
-) -> list:
-    raise NotImplementedError("breakout_52w_trades not yet implemented")
+) -> list[dict]:
+    """Momentum breakout: buy the FIRST bar of a new 52-week (lookback-bar) high.
+
+    A "fresh breakout" at day i (i >= lookback):
+      close[i] >= max(high[i-lookback : i])   — current bar is at new high
+      AND close[i-1] < max(high[i-1-lookback : i-1])  — prior bar was NOT
+
+    Enter at close[i].
+
+    Exit on first j > i where:
+      1. low[j] <= entry*(1-stop_pct) → exit at stop_level (checked FIRST)
+      2. close[j] < SMA(close, ma_exit)[j] → trend-break exit at close[j]
+    If neither triggers, exit at last close.
+
+    Returns one dict per trade: {symbol, entry_date, exit_date, return_pct, stop_pct}.
+    """
+    slip = 2 * slip_bps / 10_000
+    closes = df["close"].to_numpy()
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    sma_exit = df["close"].rolling(ma_exit).mean().to_numpy()
+    index = df.index
+
+    result: list[dict] = []
+    n = len(df)
+
+    for i in range(lookback, n - 1):
+        # Current bar: close >= max of prior `lookback` highs
+        window_cur_max = highs[i - lookback: i].max()
+        if closes[i] < window_cur_max:
+            continue
+
+        # Prior bar: must NOT have been at a new high (freshness filter)
+        prev_window_start = max(0, i - 1 - lookback)
+        window_prev_max = highs[prev_window_start: i - 1].max()
+        if closes[i - 1] >= window_prev_max:
+            continue  # prior bar was also at a new high — not a fresh breakout
+
+        entry = closes[i]
+        stop_level = entry * (1.0 - stop_pct)
+
+        exit_price = None
+        exit_j = None
+
+        for j in range(i + 1, n):
+            # 1. Hard stop (checked first)
+            if lows[j] <= stop_level:
+                exit_price = stop_level
+                exit_j = j
+                break
+            # 2. Trend-break exit: close below SMA_exit
+            if not pd.isna(sma_exit[j]) and closes[j] < sma_exit[j]:
+                exit_price = closes[j]
+                exit_j = j
+                break
+
+        # Last-bar exit if nothing triggered
+        if exit_price is None:
+            exit_j = n - 1
+            exit_price = closes[exit_j]
+
+        ret = exit_price / entry - 1.0 - slip
+        result.append({
+            "symbol": symbol,
+            "entry_date": index[i].date(),
+            "exit_date": index[exit_j].date(),
+            "return_pct": ret,
+            "stop_pct": stop_pct,
+        })
+
+    return result

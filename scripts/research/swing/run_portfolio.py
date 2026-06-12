@@ -7,10 +7,11 @@ CLI:
   python -m scripts.research.swing.run_portfolio \\
       --start 2024-01-01 --end 2025-01-01 \\
       --symbols-file scripts/research/scan_symbols.txt \\
-      [--strategy short_term_reversal|trend_pullback] \\
+      [--strategy short_term_reversal|trend_pullback|index_rsi2|turn_of_month|breakout_52w] \\
       [--start-equity 200] [--risk-pct 0.01] [--max-concurrent 5] \\
       [--slip-bps 15] [--down-days 3] [--hold 5] [--stop-pct 0.05] \\
-      [--target-pct 0.10] [--ma 200] [--ma-entry 200] [--ma-exit 50]
+      [--target-pct 0.10] [--ma 200] [--ma-entry 200] [--ma-exit 50] \\
+      [--rsi-buy 10] [--rsi-sell 70] [--max-hold 10] [--lookback 252]
 """
 from __future__ import annotations
 
@@ -23,8 +24,11 @@ from typing import Callable
 
 from scripts.research.swing.portfolio import simulate_portfolio
 from scripts.research.swing.strategies import (
+    breakout_52w_trades,
+    index_rsi2_trades,
     short_term_reversal_trades,
     trend_pullback_trades,
+    turn_of_month_trades,
 )
 
 
@@ -103,7 +107,8 @@ def main(argv=None) -> int:
                    help="Path to whitespace-delimited ticker file")
     # Strategy selection
     p.add_argument("--strategy", default="short_term_reversal",
-                   choices=["short_term_reversal", "trend_pullback"],
+                   choices=["short_term_reversal", "trend_pullback",
+                            "index_rsi2", "turn_of_month", "breakout_52w"],
                    help="Which strategy to run (default: short_term_reversal)")
     # Portfolio sizing
     p.add_argument("--start-equity", type=float, default=200.0,
@@ -129,7 +134,17 @@ def main(argv=None) -> int:
     p.add_argument("--ma-entry", type=int, default=200,
                    help="SMA period for trend_pullback uptrend filter (default 200)")
     p.add_argument("--ma-exit", type=int, default=50,
-                   help="SMA period for trend_pullback exit filter (default 50)")
+                   help="SMA period for trend_pullback / breakout_52w exit SMA (default 50)")
+    # index_rsi2 knobs
+    p.add_argument("--rsi-buy", type=float, default=10.0,
+                   help="RSI2 threshold to enter (default 10.0)")
+    p.add_argument("--rsi-sell", type=float, default=70.0,
+                   help="RSI2 threshold to exit (default 70.0)")
+    p.add_argument("--max-hold", type=int, default=10,
+                   help="Maximum hold period in bars for index_rsi2 (default 10)")
+    # breakout_52w knobs
+    p.add_argument("--lookback", type=int, default=252,
+                   help="Lookback bars for 52-week high window (default 252)")
     args = p.parse_args(argv)
 
     from src.bot.config import get_bot_config
@@ -158,11 +173,36 @@ def main(argv=None) -> int:
             ma=args.ma,
             slip_bps=args.slip_bps,
         )
-    else:  # trend_pullback
+    elif args.strategy == "trend_pullback":
         trade_fn = partial(
             trend_pullback_trades,
             down_days=args.down_days,
             ma_entry=args.ma_entry,
+            ma_exit=args.ma_exit,
+            stop_pct=args.stop_pct,
+            slip_bps=args.slip_bps,
+        )
+    elif args.strategy == "index_rsi2":
+        trade_fn = partial(
+            index_rsi2_trades,
+            ma=args.ma,
+            rsi_buy=args.rsi_buy,
+            rsi_sell=args.rsi_sell,
+            max_hold=args.max_hold,
+            stop_pct=args.stop_pct,
+            slip_bps=args.slip_bps,
+        )
+    elif args.strategy == "turn_of_month":
+        trade_fn = partial(
+            turn_of_month_trades,
+            hold=args.hold,
+            stop_pct=args.stop_pct,
+            slip_bps=args.slip_bps,
+        )
+    else:  # breakout_52w
+        trade_fn = partial(
+            breakout_52w_trades,
+            lookback=args.lookback,
             ma_exit=args.ma_exit,
             stop_pct=args.stop_pct,
             slip_bps=args.slip_bps,
