@@ -126,3 +126,84 @@ def test_is_fresh_breakout_guard_start_of_array():
     # prior window: i-1-lookback = 2-1-2=-1 → guard to 0, max(high[0:1])=[100], max=100
     # close[1]=99 < 100 → fresh breakout
     assert is_fresh_breakout(highs, closes, i=2, lookback=2) is True
+
+
+# ---------------------------------------------------------------------------
+# step — entries
+# ---------------------------------------------------------------------------
+
+def _make_breakout_bars(lookback: int = 10) -> pd.DataFrame:
+    """DataFrame with a fresh breakout at the last bar.
+
+    Bars 0..lookback-2 (9 bars): high=close=100.
+    Bar lookback-1 (bar 9): high=99, close=99 (so close[9] < max(high[0:9])=100).
+    Bar lookback (bar 10): high=102, close=101 — fresh breakout.
+    """
+    n = lookback + 1  # 11 bars (indices 0..10)
+    rows = []
+    for i in range(n):
+        if i == lookback - 1:
+            c, h = 99.0, 99.0
+        elif i == lookback:
+            c, h = 101.0, 102.0
+        else:
+            c, h = 100.0, 100.0
+        rows.append({"open": c - 0.1, "high": h, "low": c - 0.5, "close": c, "volume": 1_000_000})
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2025-01-02", periods=n, freq="B", tz="America/New_York")
+    return df
+
+
+def test_step_opens_position_on_fresh_breakout():
+    """step() opens a position on the fresh-breakout bar and deducts cash."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    # today = last bar's date
+    today = df.index[-1].date()
+    bars = {"SYM": df}
+
+    s = new_state(starting_equity=200.0)
+    s2 = step(s, bars, today, risk_pct=0.01, lookback=lookback, ma_exit=3,
+              stop_pct=0.08, slip_bps=15.0)
+
+    assert len(s2["open_positions"]) == 1, f"Expected 1 open position, got {s2['open_positions']}"
+    pos = s2["open_positions"][0]
+    assert pos["symbol"] == "SYM"
+    assert pos["entry_date"] == today.isoformat()
+    # entry_price = close of breakout bar = 101.0
+    assert abs(pos["entry_price"] - 101.0) < 1e-9
+    # stop_price = entry * (1 - 0.08)
+    assert abs(pos["stop_price"] - 101.0 * 0.92) < 1e-9
+    # available_cash decreased
+    assert s2["available_cash"] < 200.0
+    # notional = min(risk_pct*equity/stop_pct, available_cash)
+    equity = 200.0
+    expected_notional = min(0.01 * equity / 0.08, 200.0)  # = 25.0
+    assert abs(pos["notional"] - expected_notional) < 1e-9
+    assert abs(s2["available_cash"] - (200.0 - expected_notional)) < 1e-9
+
+
+def test_step_does_not_duplicate_existing_position():
+    """If a position is already open for a symbol, step skips entry even on breakout."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    today = df.index[-1].date()
+    bars = {"SYM": df}
+
+    s = new_state(starting_equity=200.0)
+    # Pre-plant an open position for SYM
+    s["open_positions"].append({
+        "symbol": "SYM",
+        "entry_date": "2025-01-01",
+        "entry_price": 50.0,
+        "stop_price": 46.0,
+        "notional": 25.0,
+    })
+    s["available_cash"] = 175.0
+
+    s2 = step(s, bars, today, risk_pct=0.01, lookback=lookback, ma_exit=3,
+              stop_pct=0.08, slip_bps=15.0)
+
+    # Still exactly 1 open position (no new entry)
+    assert len(s2["open_positions"]) == 1
+    assert s2["available_cash"] == 175.0
