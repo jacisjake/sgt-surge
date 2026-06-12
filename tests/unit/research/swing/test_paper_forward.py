@@ -389,3 +389,40 @@ def test_step_idempotent_earlier_day():
     # No change
     assert len(s2["open_positions"]) == len(s1["open_positions"])
     assert s2["available_cash"] == s1["available_cash"]
+
+
+# ---------------------------------------------------------------------------
+# Sizing edge cases
+# ---------------------------------------------------------------------------
+
+def test_step_notional_capped_at_available_cash():
+    """When risk_pct*equity/stop_pct > available_cash, notional = available_cash."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    today = df.index[-1].date()
+
+    # equity=200, risk_pct=0.5, stop_pct=0.01 → uncapped notional=200*0.5/0.01=10000
+    # but available_cash=200 → capped at 200
+    s = new_state(starting_equity=200.0)
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.5, lookback=lookback,
+              ma_exit=3, stop_pct=0.01, slip_bps=0.0)
+
+    assert len(s2["open_positions"]) == 1
+    pos = s2["open_positions"][0]
+    assert abs(pos["notional"] - 200.0) < 1e-9
+    assert abs(s2["available_cash"]) < 1e-9
+
+
+def test_step_skips_entry_when_notional_below_1():
+    """When notional would be < 1.0, step skips entry and leaves cash unchanged."""
+    lookback = 10
+    df = _make_breakout_bars(lookback)
+    today = df.index[-1].date()
+
+    # equity=0.05, risk_pct=0.01, stop_pct=0.08 → notional = 0.05*0.01/0.08=0.00625 < 1
+    s = new_state(starting_equity=0.05)
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.01, lookback=lookback,
+              ma_exit=3, stop_pct=0.08, slip_bps=0.0)
+
+    assert len(s2["open_positions"]) == 0
+    assert abs(s2["available_cash"] - 0.05) < 1e-9
