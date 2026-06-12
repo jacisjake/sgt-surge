@@ -23,7 +23,7 @@ SWING_STRATEGIES = {
 
 
 def run(client, symbols, start, end, slip_bps: float = 15.0,
-        n_min: int = 30) -> list[dict]:
+        n_min: int = 30, strategies=None) -> list[dict]:
     """Backtest all swing strategies over daily bars for each symbol.
 
     Parameters
@@ -39,7 +39,8 @@ def run(client, symbols, start, end, slip_bps: float = 15.0,
     -------
     list[dict] sorted by expectancy descending, one entry per strategy.
     """
-    trades_by_strategy: dict[str, list[float]] = {k: [] for k in SWING_STRATEGIES}
+    strategies = strategies or SWING_STRATEGIES
+    trades_by_strategy: dict[str, list[float]] = {k: [] for k in strategies}
     n_symbols = 0
 
     for sym in symbols:
@@ -47,7 +48,7 @@ def run(client, symbols, start, end, slip_bps: float = 15.0,
         if df is None or df.empty:
             continue
         n_symbols += 1
-        for name, fn in SWING_STRATEGIES.items():
+        for name, fn in strategies.items():
             trades_by_strategy[name].extend(fn(df, slip_bps=slip_bps))
 
     reports = [summarize(name, returns) for name, returns in trades_by_strategy.items()]
@@ -81,6 +82,12 @@ def main(argv=None) -> int:
                    help="One-way slippage in bps (default 15)")
     p.add_argument("--n-min", type=int, default=30,
                    help="Min trades before low-N flag (default 30)")
+    # short_term_reversal knobs (for the param-robustness sweep)
+    p.add_argument("--down-days", type=int, default=3)
+    p.add_argument("--hold", type=int, default=5)
+    p.add_argument("--stop-pct", type=float, default=0.05)
+    p.add_argument("--target-pct", type=float, default=0.10)
+    p.add_argument("--ma", type=int, default=200)
     args = p.parse_args(argv)
 
     from src.bot.config import get_bot_config
@@ -98,8 +105,16 @@ def main(argv=None) -> int:
         callback_url=cfg.schwab_oauth_redirect_uri,
         token_path=cfg.schwab_token_path,
     )
+    from functools import partial
+    strategies = {
+        "overnight_drift": overnight_drift,
+        "short_term_reversal": partial(
+            short_term_reversal, down_days=args.down_days, hold=args.hold,
+            stop_pct=args.stop_pct, target_pct=args.target_pct, ma=args.ma,
+        ),
+    }
     run(client, symbols, date.fromisoformat(args.start), date.fromisoformat(args.end),
-        slip_bps=args.slip_bps, n_min=args.n_min)
+        slip_bps=args.slip_bps, n_min=args.n_min, strategies=strategies)
     return 0
 
 
