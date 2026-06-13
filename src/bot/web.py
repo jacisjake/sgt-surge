@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -100,6 +101,26 @@ _DASHBOARD_HTML = """\
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Paper Forward &mdash; breakout_52w
+      <span id="paper-meta" style="font-weight:normal;color:#8b949e"></span></h2>
+    <div id="paper-summary" style="margin-bottom:10px;font-size:13px"></div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <div style="color:#8b949e;font-size:12px;margin-bottom:4px">Open positions</div>
+        <table id="paper-open"><thead><tr>
+          <th>Symbol</th><th>Entry date</th><th>Entry</th><th>Stop</th><th>Notional</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div style="color:#8b949e;font-size:12px;margin-bottom:4px">Recent closed</div>
+        <table id="paper-closed"><thead><tr>
+          <th>Symbol</th><th>Held</th><th>P&amp;L</th><th>Reason</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
   </div>
 
   <div id="overlay" class="overlay">
@@ -362,6 +383,34 @@ async function refresh() {
     ];
   });
   renderTable('#pos-table tbody', posRows);
+
+  const paper = await (await fetch('/sgt/api/paper')).json();
+  if (paper.exists) {
+    setText('paper-meta', '· as of ' + (paper.last_date || '-'));
+    const ret = paper.total_return || 0;
+    document.getElementById('paper-summary').innerHTML =
+      'Equity <b>$' + paper.equity.toFixed(2) + '</b> &nbsp;|&nbsp; Return '
+      + '<b class="' + (ret >= 0 ? 'ok' : 'err') + '">' + (ret * 100).toFixed(1) + '%</b>'
+      + ' &nbsp;|&nbsp; Open ' + paper.n_open
+      + ' &nbsp;|&nbsp; Closed ' + paper.n_closed
+      + ' (win ' + (paper.win_rate * 100).toFixed(0) + '%)';
+    renderTable('#paper-open tbody', paper.open_positions.map(function (p) {
+      return [{text: p.symbol}, {text: p.entry_date},
+              {text: '$' + (p.entry_price || 0).toFixed(2)},
+              {text: '$' + (p.stop_price || 0).toFixed(2)},
+              {text: '$' + (p.notional || 0).toFixed(2)}];
+    }));
+    renderTable('#paper-closed tbody', paper.closed_trades.map(function (t) {
+      const pnl = t.pnl || 0;
+      return [{text: t.symbol},
+              {text: (t.entry_date || '') + ' → ' + (t.exit_date || '')},
+              {text: '$' + pnl.toFixed(2), cls: pnl >= 0 ? 'ok' : 'err'},
+              {text: t.reason || ''}];
+    }));
+  } else {
+    document.getElementById('paper-summary').textContent =
+      'No paper-test data yet (first run 16:30 ET).';
+  }
 }
 
 document.getElementById('oauth-btn').addEventListener('click', function () {
@@ -558,6 +607,40 @@ async def positions() -> list[dict]:
     if _bot is None:
         return []
     return [p.to_dict() for p in _bot.position_manager.get_open_positions()]
+
+
+@app.get("/api/paper")
+async def paper_forward() -> dict:
+    """Read-only view of the breakout_52w paper-forward ledger written daily by
+    scripts/research/swing/paper_forward.py. Simulated only — no real orders."""
+    if _bot is None:
+        return {"exists": False}
+    try:
+        path = Path(_bot.config.state_dir) / "swing_paper_breakout.json"
+        if not path.exists():
+            return {"exists": False}
+        data = json.loads(path.read_text())
+    except Exception:
+        return {"exists": False}
+
+    start = float(data.get("starting_equity", 0.0) or 0.0)
+    realized = float(data.get("realized_pnl", 0.0) or 0.0)
+    equity = start + realized
+    closed = data.get("closed_trades", [])
+    wins = [t for t in closed if (t.get("pnl") or 0) > 0]
+    return {
+        "exists": True,
+        "equity": equity,
+        "starting_equity": start,
+        "total_return": (equity / start - 1.0) if start else 0.0,
+        "realized_pnl": realized,
+        "n_open": len(data.get("open_positions", [])),
+        "n_closed": len(closed),
+        "win_rate": (len(wins) / len(closed)) if closed else 0.0,
+        "last_date": data.get("last_date"),
+        "open_positions": data.get("open_positions", []),
+        "closed_trades": list(reversed(closed))[:25],
+    }
 
 
 @app.post("/admin/lock_or_now")

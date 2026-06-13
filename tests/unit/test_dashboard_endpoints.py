@@ -102,6 +102,37 @@ def test_bars_single_symbol_returns_full_ohlcv(bot_app):
     assert body["bars"][0]["v"] == 1000
 
 
+def test_paper_forward_reads_ledger_and_computes_stats(bot_app, tmp_path):
+    client, bot = bot_app
+    ledger = {
+        "starting_equity": 200.0, "realized_pnl": 12.5, "last_date": "2026-06-15",
+        "open_positions": [{"symbol": "TGT", "entry_date": "2026-06-12",
+                            "entry_price": 135.0, "stop_price": 124.0, "notional": 25.0}],
+        "closed_trades": [{"symbol": "IWM", "entry_date": "2026-06-10",
+                           "exit_date": "2026-06-13", "entry_price": 290.0,
+                           "exit_price": 305.0, "pnl": 12.5, "reason": "trend_break"}],
+    }
+    (tmp_path / "swing_paper_breakout.json").write_text(__import__("json").dumps(ledger))
+    bot.config.state_dir = str(tmp_path)
+
+    r = client.get("/api/paper")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["exists"] is True
+    assert body["equity"] == 212.5
+    assert round(body["total_return"], 5) == round(12.5 / 200, 5)
+    assert body["n_open"] == 1 and body["n_closed"] == 1
+    assert body["win_rate"] == 1.0
+    assert body["open_positions"][0]["symbol"] == "TGT"
+    assert body["closed_trades"][0]["reason"] == "trend_break"
+
+
+def test_paper_forward_missing_ledger_returns_not_exists(bot_app, tmp_path):
+    client, bot = bot_app
+    bot.config.state_dir = str(tmp_path)  # no ledger file present
+    assert client.get("/api/paper").json() == {"exists": False}
+
+
 def test_bars_symbol_with_empty_buffer_returns_empty(bot_app):
     client, bot = bot_app
     bot.stream_handler.get_close_series.return_value = {}  # nothing buffered yet
