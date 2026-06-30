@@ -333,13 +333,18 @@ function closeModal() {
 }
 
 async function refresh() {
-  const auth = await (await fetch('/sgt/api/auth/status')).json();
-  setText('auth', auth.authenticated ? 'authenticated' : 'unauthenticated',
-          auth.authenticated ? 'ok' : 'err');
-  document.getElementById('oauth-btn').style.display =
-      auth.authenticated ? 'none' : 'inline-block';
-
   const status = await (await fetch('/sgt/api/status')).json();
+  // Drive the auth badge off the real broker state in /api/status, not
+  // /api/auth/status — the latter only reports that a client loaded at
+  // startup and stays "authenticated" even when the refresh token is dead.
+  const authOk = status.mode === 'running';
+  const authLabel = status.mode === 'error' ? 'token error'
+                  : status.mode === 'setup' ? 'unauthenticated'
+                  : authOk ? 'authenticated' : (status.mode || 'unknown');
+  setText('auth', authLabel, authOk ? 'ok' : 'err');
+  document.getElementById('oauth-btn').style.display =
+      authOk ? 'none' : 'inline-block';
+
   setText('mode', status.mode || '-');
   if (status.account) {
     setText('account',
