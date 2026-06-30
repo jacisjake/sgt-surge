@@ -13,6 +13,8 @@ from typing import Any
 
 import pandas as pd
 
+from scripts.research.swing.strategies import stop_fill_price
+
 
 # ---------------------------------------------------------------------------
 # State schema helpers
@@ -137,6 +139,7 @@ def step(
 
         closes = df["close"].to_numpy()
         lows = df["low"].to_numpy()
+        opens = df["open"].to_numpy()
         sma_exit_series = df["close"].rolling(ma_exit).mean()
         sma_exit_today = sma_exit_series.iloc[i]
 
@@ -148,7 +151,8 @@ def step(
         reason = None
 
         if lows[i] <= stop_price:
-            exit_price = stop_price
+            # Gap-down through the stop fills at the open, not the stop level.
+            exit_price = stop_fill_price(stop_price, opens[i])
             reason = "stop"
         elif (not pd.isna(sma_exit_today)) and (closes[i] < sma_exit_today):
             exit_price = closes[i]

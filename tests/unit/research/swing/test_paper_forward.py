@@ -426,3 +426,33 @@ def test_step_skips_entry_when_notional_below_1():
 
     assert len(s2["open_positions"]) == 0
     assert abs(s2["available_cash"] - 0.05) < 1e-9
+
+
+def test_step_stop_gap_down_fills_at_open():
+    """A gap-down through the stop fills at the bar's open, not the stop price."""
+    slip_bps = 15.0
+    slip = 2 * slip_bps / 10_000
+    entry_price = 100.0
+    stop_pct = 0.08
+    stop_price = entry_price * (1 - stop_pct)  # 92.0
+    notional = 25.0
+
+    s = _state_with_open_position(
+        entry_price=entry_price, stop_pct=stop_pct, notional=notional, equity=200.0,
+    )
+    # today gaps down: open = close_today - 0.5 = 87.5 (< stop 92), low 85 <= stop.
+    df = _make_exit_df(close_today=88.0, low_today=85.0, ma_exit=3, seed_close=100.0)
+    today = df.index[-1].date()
+    open_today = float(df["open"].iloc[-1])  # 87.5
+    assert open_today < stop_price  # sanity: this really is a gap-down
+
+    s2 = step(s, {"SYM": df}, today, risk_pct=0.01, lookback=3, ma_exit=3,
+              stop_pct=stop_pct, slip_bps=slip_bps)
+
+    assert len(s2["closed_trades"]) == 1
+    t = s2["closed_trades"][0]
+    assert t["reason"] == "stop"
+    # Filled at the open, NOT the (better) stop level.
+    assert abs(t["exit_price"] - open_today) < 1e-9
+    expected_pnl = notional * ((open_today * (1 - slip)) / (entry_price * (1 + slip)) - 1)
+    assert abs(t["pnl"] - expected_pnl) < 1e-9

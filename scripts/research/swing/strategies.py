@@ -11,6 +11,17 @@ import datetime
 import pandas as pd
 
 
+def stop_fill_price(stop_level: float, bar_open: float) -> float:
+    """Realistic stop fill for a long position on the bar that triggers the stop.
+
+    A stop assumes you exit *at* the stop level, but if the bar gaps down and
+    opens below the stop, the first available price is the open — you fill there
+    (worse), not at the stop. Returns min(stop_level, bar_open) so gap-downs are
+    not flattered by an unrealistically good fill.
+    """
+    return min(stop_level, bar_open)
+
+
 def _rsi(close, period):
     import pandas as pd
     delta = close.diff()
@@ -63,6 +74,7 @@ def short_term_reversal(
     closes = df["close"].to_numpy()
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     sma = df["close"].rolling(ma).mean().to_numpy()
 
     result: list[float] = []
@@ -91,7 +103,7 @@ def short_term_reversal(
         exit_price = None
         for j in range(i + 1, min(i + 1 + hold, n)):
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 break
             if highs[j] >= target_level:
                 exit_price = target_level
@@ -133,6 +145,7 @@ def trend_pullback_trades(
     slip = 2 * slip_bps / 10_000
     closes = df["close"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     sma_entry = df["close"].rolling(ma_entry).mean().to_numpy()
     sma_exit = df["close"].rolling(ma_exit).mean().to_numpy()
     index = df.index
@@ -165,7 +178,7 @@ def trend_pullback_trades(
         for j in range(i + 1, n):
             # Check hard stop first (conservative)
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 exit_j = j
                 break
             # Check trend break: close below SMA_exit (only when SMA_exit is valid)
@@ -218,6 +231,7 @@ def short_term_reversal_trades(
     closes = df["close"].to_numpy()
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     sma = df["close"].rolling(ma).mean().to_numpy()
     index = df.index
 
@@ -245,7 +259,7 @@ def short_term_reversal_trades(
         exit_j = None
         for j in range(i + 1, min(i + 1 + hold, n)):
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 exit_j = j
                 break
             if highs[j] >= target_level:
@@ -296,6 +310,7 @@ def index_rsi2_trades(
     slip = 2 * slip_bps / 10_000
     closes = df["close"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     sma = df["close"].rolling(ma).mean().to_numpy()
     rsi2 = _rsi(df["close"], 2).to_numpy()
     index = df.index
@@ -321,7 +336,7 @@ def index_rsi2_trades(
         for j in range(i + 1, n):
             # 1. Hard stop (checked first)
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 exit_j = j
                 break
             # 2. RSI2 recovery exit
@@ -373,6 +388,7 @@ def turn_of_month_trades(
     slip = 2 * slip_bps / 10_000
     closes = df["close"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     index = df.index
 
     result: list[dict] = []
@@ -392,7 +408,7 @@ def turn_of_month_trades(
         end_j = min(i + hold, n - 1)
         for j in range(i + 1, end_j + 1):
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 exit_j = j
                 break
 
@@ -439,6 +455,7 @@ def breakout_52w_trades(
     closes = df["close"].to_numpy()
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
+    opens = df["open"].to_numpy()
     sma_exit = df["close"].rolling(ma_exit).mean().to_numpy()
     index = df.index
 
@@ -466,7 +483,7 @@ def breakout_52w_trades(
         for j in range(i + 1, n):
             # 1. Hard stop (checked first)
             if lows[j] <= stop_level:
-                exit_price = stop_level
+                exit_price = stop_fill_price(stop_level, opens[j])
                 exit_j = j
                 break
             # 2. Trend-break exit: close below SMA_exit

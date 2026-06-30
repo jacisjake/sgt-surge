@@ -14,6 +14,7 @@ from scripts.research.swing.strategies import (
     index_rsi2_trades,
     turn_of_month_trades,
     breakout_52w_trades,
+    stop_fill_price,
 )
 
 
@@ -1207,3 +1208,102 @@ def test_breakout_52w_no_breakout():
 
     trades = breakout_52w_trades(df, "FLAT", lookback=10, ma_exit=3, stop_pct=0.08)
     assert trades == []
+
+
+# ---------------------------------------------------------------------------
+# stop_fill_price — gap-down hardening
+# ---------------------------------------------------------------------------
+
+def test_stop_fill_price_no_gap_fills_at_stop():
+    """When the bar opens above the stop, the fill is the stop level."""
+    assert stop_fill_price(92.0, 95.0) == 92.0
+
+
+def test_stop_fill_price_gap_down_fills_at_open():
+    """When the bar gaps down through the stop, the fill is the (worse) open."""
+    assert stop_fill_price(92.0, 85.0) == 85.0
+
+
+def test_stop_fill_price_open_equals_stop():
+    """An open exactly at the stop fills at the stop."""
+    assert stop_fill_price(92.0, 92.0) == 92.0
+
+
+# ---------------------------------------------------------------------------
+# Gap-down stop fills wired into strategy functions
+# ---------------------------------------------------------------------------
+
+def test_breakout_52w_stop_gap_down_fills_at_open():
+    """A fresh breakout that gaps down through its stop fills at the open."""
+    slip = 2 * 15.0 / 10_000
+    rows = [
+        {"open": 100.0, "high": 100.0, "low": 99.0, "close": 100.0, "volume": 1_000_000},  # 0
+        {"open": 100.0, "high": 100.0, "low": 99.0, "close": 100.0, "volume": 1_000_000},  # 1
+        {"open": 100.0, "high": 100.0, "low": 99.0, "close": 100.0, "volume": 1_000_000},  # 2
+        {"open": 99.0,  "high": 99.0,  "low": 98.0, "close": 99.0,  "volume": 1_000_000},  # 3 (not a new high)
+        {"open": 101.0, "high": 102.0, "low": 101.0, "close": 102.0, "volume": 1_000_000}, # 4 fresh breakout entry
+        {"open": 90.0,  "high": 91.0,  "low": 88.0, "close": 89.0,  "volume": 1_000_000},  # 5 gap-down stop
+    ]
+    df = _make_df(rows)
+
+    trades = breakout_52w_trades(df, "GAP", lookback=3, ma_exit=2, stop_pct=0.08)
+
+    t = next(x for x in trades if x["entry_date"] == datetime.date(2025, 1, 8))
+    entry = 102.0
+    stop_level = entry * (1 - 0.08)  # 93.84
+    assert df["open"].iloc[5] < stop_level  # sanity: it really gapped down
+    expected_ret = 90.0 / entry - 1.0 - slip  # fills at open 90, NOT stop 93.84
+    assert abs(t["return_pct"] - expected_ret) < 1e-10
+    assert t["exit_date"] == datetime.date(2025, 1, 9)
+
+
+def test_trend_pullback_stop_gap_down_fills_at_open():
+    """trend_pullback stop fill uses the open on a gap-down day."""
+    slip = 2 * 15.0 / 10_000
+    # Low seed pulls SMA(5) down so the post-pullback close stays above it, while
+    # bars 3..6 are strictly decreasing (the down_days=3 setup ending at i=6).
+    rows = [
+        {"open": 80.0,  "high": 81.0,  "low": 79.0,  "close": 80.0,  "volume": 1_000_000},  # 0
+        {"open": 80.0,  "high": 81.0,  "low": 79.0,  "close": 80.0,  "volume": 1_000_000},  # 1
+        {"open": 80.0,  "high": 81.0,  "low": 79.0,  "close": 80.0,  "volume": 1_000_000},  # 2
+        {"open": 119.0, "high": 121.0, "low": 118.0, "close": 120.0, "volume": 1_000_000},  # 3 jump up
+        {"open": 119.5, "high": 120.0, "low": 118.0, "close": 119.0, "volume": 1_000_000},  # 4 down 1
+        {"open": 118.5, "high": 119.0, "low": 117.0, "close": 118.0, "volume": 1_000_000},  # 5 down 2
+        {"open": 117.5, "high": 118.0, "low": 116.0, "close": 117.0, "volume": 1_000_000},  # 6 down 3 -> entry (close=117)
+        {"open": 100.0, "high": 101.0, "low": 98.0,  "close": 99.0,  "volume": 1_000_000},  # 7 gap-down stop
+    ]
+    df = _make_df(rows)
+
+    trades = trend_pullback_trades(df, "GAP", down_days=3, ma_entry=5, ma_exit=2, stop_pct=0.08)
+
+    t = next(x for x in trades if x["entry_date"] == datetime.date(2025, 1, 10))  # index 6
+    entry = 117.0
+    stop_level = entry * (1 - 0.08)  # 107.64
+    assert df["open"].iloc[7] < stop_level  # gap-down sanity
+    expected_ret = 100.0 / entry - 1.0 - slip  # fills at open 100, NOT stop 107.64
+    assert abs(t["return_pct"] - expected_ret) < 1e-10
+
+
+def test_turn_of_month_stop_gap_down_fills_at_open():
+    """turn_of_month stop fill uses the open on a gap-down day."""
+    slip = 2 * 15.0 / 10_000
+    # Build Jan 30 -> Feb 2 boundary; enter on last trading day of Jan, gap-down next bar.
+    rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1_000_000},
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1_000_000},
+        {"open": 80.0,  "high": 81.0,  "low": 78.0, "close": 79.0,  "volume": 1_000_000},  # gap-down stop bar
+        {"open": 79.0,  "high": 80.0,  "low": 78.0, "close": 79.0,  "volume": 1_000_000},
+    ]
+    df = pd.DataFrame(rows)
+    # Force a month boundary between index 1 (Jan) and index 2 (Feb).
+    df.index = pd.DatetimeIndex(["2025-01-30", "2025-01-31", "2025-02-03", "2025-02-04"],
+                                tz="America/New_York")
+
+    trades = turn_of_month_trades(df, "GAP", hold=4, stop_pct=0.08)
+
+    t = trades[0]
+    entry = 100.0
+    stop_level = entry * (1 - 0.08)  # 92.0
+    assert df["open"].iloc[2] < stop_level  # gap-down sanity
+    expected_ret = 80.0 / entry - 1.0 - slip  # fills at open 80, NOT stop 92.0
+    assert abs(t["return_pct"] - expected_ret) < 1e-10
