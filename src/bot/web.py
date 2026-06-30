@@ -15,6 +15,8 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from src.bot.comparison import comparison_stats, trade_returns
+
 try:
     from schwab.auth import client_from_received_url, get_auth_context
 except ImportError:  # pragma: no cover
@@ -101,6 +103,15 @@ _DASHBOARD_HTML = """\
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Strategy comparison
+      <span style="font-weight:normal;color:#6e7681">&mdash; edge is sizing-normalized (per-trade price return)</span></h2>
+    <table id="compare-table"><thead><tr>
+      <th>Metric</th><th>ORB (live)</th><th>breakout_52w (paper)</th>
+    </tr></thead><tbody></tbody></table>
+    <div id="compare-real" style="margin-top:8px;font-size:12px;color:#8b949e"></div>
   </div>
 
   <div class="panel">
@@ -416,6 +427,27 @@ async function refresh() {
     document.getElementById('paper-summary').textContent =
       'No paper-test data yet (first run 16:30 ET).';
   }
+
+  const cmp = await (await fetch('/sgt/api/compare')).json();
+  if (cmp.orb && cmp.paper) {
+    const pct = function (x) { return (x * 100).toFixed(1) + '%'; };
+    const signed = function (x) { return {text: pct(x), cls: x >= 0 ? 'ok' : (x < 0 ? 'err' : '')}; };
+    const o = cmp.orb, p = cmp.paper;
+    renderTable('#compare-table tbody', [
+      [{text: 'Closed trades'}, {text: String(o.n_closed)}, {text: String(p.n_closed)}],
+      [{text: 'Win rate'}, {text: pct(o.win_rate)}, {text: pct(p.win_rate)}],
+      [{text: 'Avg win'}, signed(o.avg_win), signed(p.avg_win)],
+      [{text: 'Avg loss'}, signed(o.avg_loss), signed(p.avg_loss)],
+      [{text: 'Expectancy / trade'}, signed(o.expectancy), signed(p.expectancy)],
+      [{text: 'Cum. return (equal-weight)'}, signed(o.norm_return), signed(p.norm_return)],
+    ]);
+    const eq = (o.account_equity != null) ? ('$' + o.account_equity.toFixed(2)) : '—';
+    document.getElementById('compare-real').innerHTML =
+      'Real account (ORB): equity <b>' + eq + '</b> &nbsp;|&nbsp; realized '
+      + '<b class="' + (o.realized_pnl >= 0 ? 'ok' : 'err') + '">$' + o.realized_pnl.toFixed(2) + '</b>'
+      + ' &nbsp;·&nbsp; paper realized <b class="' + (p.realized_pnl >= 0 ? 'ok' : 'err')
+      + '">$' + p.realized_pnl.toFixed(2) + '</b> (sim)';
+  }
 }
 
 document.getElementById('oauth-btn').addEventListener('click', function () {
@@ -646,6 +678,43 @@ async def paper_forward() -> dict:
         "open_positions": data.get("open_positions", []),
         "closed_trades": list(reversed(closed))[:25],
     }
+
+
+@app.get("/api/compare")
+async def compare() -> dict:
+    """Head-to-head of live ORB vs the breakout_52w paper test.
+
+    Edge metrics (win rate, avg win/loss, expectancy, equal-weight return) are
+    sizing-independent — each closed trade is reduced to its price return
+    exit/entry-1 — so the two can be compared despite different position sizing.
+    ORB's real-dollar P&L and live account equity are reported separately.
+    """
+    if _bot is None:
+        return {"orb": None, "paper": None}
+
+    # Live ORB — from the persistent trade ledger.
+    orb_trades = _bot.trade_ledger.get_trades(limit=10_000)
+    orb = comparison_stats(trade_returns(orb_trades, "entry_price", "exit_price"))
+    orb["realized_pnl"] = _bot.trade_ledger.get_total_realized_pnl()
+    try:
+        orb["account_equity"] = _bot.client.get_account().get("equity")
+    except Exception:
+        orb["account_equity"] = None
+
+    # Paper breakout_52w — from the daily ledger.
+    paper = comparison_stats([])
+    paper["realized_pnl"] = 0.0
+    try:
+        path = Path(_bot.config.state_dir) / "swing_paper_breakout.json"
+        if path.exists():
+            data = json.loads(path.read_text())
+            closed = data.get("closed_trades", [])
+            paper = comparison_stats(trade_returns(closed, "entry_price", "exit_price"))
+            paper["realized_pnl"] = float(data.get("realized_pnl", 0.0) or 0.0)
+    except Exception:
+        pass
+
+    return {"orb": orb, "paper": paper}
 
 
 @app.post("/admin/lock_or_now")

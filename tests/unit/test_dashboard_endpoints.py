@@ -127,6 +127,51 @@ def test_paper_forward_reads_ledger_and_computes_stats(bot_app, tmp_path):
     assert body["closed_trades"][0]["reason"] == "trend_break"
 
 
+def test_compare_returns_orb_and_paper_edge_metrics(bot_app, tmp_path):
+    client, bot = bot_app
+    # ORB live ledger: one +10% winner, one -5% loser.
+    bot.trade_ledger.get_trades.return_value = [
+        {"symbol": "AAPL", "entry_price": 10.0, "exit_price": 11.0},
+        {"symbol": "MSFT", "entry_price": 20.0, "exit_price": 19.0},
+    ]
+    bot.trade_ledger.get_total_realized_pnl.return_value = 3.21
+    # Paper breakout_52w ledger: two closed trades.
+    ledger = {
+        "starting_equity": 200.0, "realized_pnl": -6.41,
+        "open_positions": [],
+        "closed_trades": [
+            {"symbol": "AMD", "entry_price": 100.0, "exit_price": 92.0, "pnl": -2.1, "reason": "stop"},
+            {"symbol": "GS", "entry_price": 100.0, "exit_price": 110.0, "pnl": 10.0, "reason": "trend_break"},
+        ],
+    }
+    (tmp_path / "swing_paper_breakout.json").write_text(__import__("json").dumps(ledger))
+    bot.config.state_dir = str(tmp_path)
+
+    r = client.get("/api/compare")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["orb"]["n_closed"] == 2
+    assert body["orb"]["win_rate"] == 0.5
+    assert body["orb"]["realized_pnl"] == 3.21
+    assert body["orb"]["account_equity"] == 270.0  # from get_account mock
+
+    assert body["paper"]["n_closed"] == 2
+    assert body["paper"]["win_rate"] == 0.5
+    assert body["paper"]["realized_pnl"] == -6.41
+
+
+def test_compare_handles_empty_ledgers(bot_app, tmp_path):
+    client, bot = bot_app
+    bot.trade_ledger.get_trades.return_value = []
+    bot.trade_ledger.get_total_realized_pnl.return_value = 0.0
+    bot.config.state_dir = str(tmp_path)  # no paper ledger file
+
+    body = client.get("/api/compare").json()
+    assert body["orb"]["n_closed"] == 0
+    assert body["paper"]["n_closed"] == 0
+
+
 def test_paper_forward_missing_ledger_returns_not_exists(bot_app, tmp_path):
     client, bot = bot_app
     bot.config.state_dir = str(tmp_path)  # no ledger file present
