@@ -6,16 +6,27 @@ Algorithmic momentum day-trading bot for Charles Schwab. Built for small account
 
 ## Strategy
 
-**Momentum Surge** -- Ross Cameron-style breakout trading on 5-minute bars.
+**Opening Range Breakout (ORB)** -- long-only breakout trading on 5-minute bars.
 
-- **Scanner**: TradingView screener for top gainers, enriched with relative volume and float data
-- **Entry**: Price near recent high, above VWAP, RSI 55-90, volume surge > 1.5x average, strong bar close
-- **Exit**: 2 consecutive closes below VWAP, RSI collapse (< 40), or price below 10-bar low
-- **Stop**: ATR x 2.0 below entry, with progressive R-trailing stop
-- **Target**: 3:1 risk/reward
-- **Schedule**: Scanning 6:00 AM - 4:00 PM ET, safety net close at 3:55 PM ET
-- **Position sizing**: Up to 90% of buying power, max 2% account risk per trade
-- **Max trades/day**: 10 (max 2 per symbol)
+- **Scanner**: TradingView screener for pre-market gappers (top 5, configurable), enriched with relative volume and float data
+- **Opening range**: 09:30-09:45 ET window; the OR high/low is locked at 09:45 ET
+- **Entry**: single 5-min close above the OR high, with a volume filter (long-only)
+- **Stop**: OR low. **Target**: entry + 2R, with progressive R-trailing (breakeven floor at +1R, chandelier overlay above)
+- **Schedule**: scanning during the RTH session, safety-net flatten at 15:55 ET (no overnight)
+- **Position sizing**: hybrid (~90% of buying power deploy, capped by max risk %)
+- **Max trades/day**: cash-account-constrained (no fixed cap)
+
+Bars: Schwab streams 1-min bars, aggregated internally to 5-min. The live strategy
+lives in `src/bot/signals/orb.py`.
+
+### Research track
+
+A separate research effort (`scripts/research/`, `docs/superpowers/`) backtests
+structurally different edges to eventually replace ORB. The current front-runner,
+`breakout_52w` (52-week-high swing momentum), runs as a **dry-run paper
+forward-tester** (`run_paper_forward.sh`, weekday cron) alongside the live bot for
+head-to-head comparison via the `/api/compare` dashboard. See
+`docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
 
 ## Prerequisites
 
@@ -90,34 +101,29 @@ sgt-schwab/
 ├── src/
 │   ├── bot/
 │   │   ├── main.py              # TradingBot orchestrator
-│   │   ├── api.py               # FastAPI dashboard server
+│   │   ├── web.py               # FastAPI dashboard + API server
 │   │   ├── config.py            # Bot-specific config (strategy params)
 │   │   ├── executor.py          # Signal -> order execution
 │   │   ├── processor.py         # Signal filtering and validation
 │   │   ├── scheduler.py         # APScheduler job management
 │   │   ├── screener.py          # Stock screener logic
 │   │   ├── tradingview_screener.py  # TradingView API integration
-│   │   ├── stream_handler.py    # WebSocket bar aggregation
+│   │   ├── stream_handler.py    # 1-min -> 5-min bar aggregation
 │   │   ├── monitor.py           # Position monitoring and P&L
+│   │   ├── comparison.py        # Live-vs-paper strategy stats (/api/compare)
 │   │   ├── float_provider.py    # Float data from FMP API
-│   │   ├── press_release_scanner.py # Pre-market catalyst detection
 │   │   ├── signals/             # Signal generation strategies
 │   │   │   ├── base.py          # Abstract signal base class
-│   │   │   ├── momentum_surge.py    # Primary strategy
-│   │   │   ├── momentum_pullback.py # Pullback after surge
-│   │   │   ├── breakout.py      # Price breakout
-│   │   │   ├── macd.py          # MACD crossover
-│   │   │   ├── macd_systems.py  # Complex MACD systems
-│   │   │   └── mean_reversion.py    # Mean reversion
+│   │   │   └── orb.py           # Opening Range Breakout (live strategy)
 │   │   └── state/               # State persistence
 │   │       ├── persistence.py   # Bot state file I/O
 │   │       └── trade_ledger.py  # Trade history tracking
-│   ├── core/                    # Broker integration
-│   │   ├── tastytrade_client.py # REST API wrapper
-│   │   ├── tastytrade_ws.py     # DXLink WebSocket streaming
+│   ├── core/                    # Schwab broker integration
+│   │   ├── schwab_client.py     # Schwab REST API wrapper (schwab-py)
+│   │   ├── schwab_stream.py     # Schwab streaming (1-min bars/quotes)
 │   │   ├── order_executor.py    # Order submission
 │   │   ├── position_manager.py  # Position tracking
-│   │   └── regime_detector.py   # HMM market regime detection
+│   │   └── market_calendar.py   # Trading-session calendar
 │   ├── risk/                    # Risk management
 │   │   ├── portfolio_limits.py  # Portfolio-level limits
 │   │   ├── position_sizer.py    # Position sizing
@@ -125,18 +131,21 @@ sgt-schwab/
 │   └── data/
 │       └── indicators.py        # Technical indicators
 ├── scripts/
-│   ├── run_bot.py               # Main entry point
+│   ├── run_bot.py               # Main entry point (container CMD)
 │   ├── healthcheck.sh           # Remote health monitoring
-│   ├── backtest_surge.py        # Backtest momentum surge
-│   └── ...                      # Other backtest scripts
+│   ├── smoke_schwab.py          # Schwab auth/connectivity smoke test
+│   ├── backtest_orb.py          # Backtest the ORB strategy
+│   ├── backtest_*.py            # Other backtest scripts
+│   └── research/                # Strategy bake-off + swing paper-forward harness
 ├── deploy/
 │   ├── podman-compose.yml       # Container orchestration
 │   ├── deploy-remote.sh         # Remote deployment script
 │   ├── sgt-schwab.service       # systemd service file
-│   ├── supervisor.conf          # Supervisor config
 │   └── com.jacobmadsen.sgt-schwab.plist  # macOS launchd config
+├── docs/superpowers/            # Plans, specs, and bake-off results
+├── run_paper_forward.sh         # Daily breakout_52w paper forward-tester (cron)
 ├── tests/
-│   └── unit/                    # Unit tests
+│   └── unit/                    # Unit tests (260 passing)
 ├── state/                       # Runtime state (not tracked)
 └── logs/                        # Application logs (not tracked)
 ```
@@ -288,8 +297,8 @@ pytest tests/unit/ --cov=src
 Several backtest scripts are included in `scripts/`:
 
 ```bash
-# Backtest the momentum surge strategy
-python scripts/backtest_surge.py
+# Backtest the live ORB strategy (chandelier stops, daily snapshots)
+python scripts/backtest_orb.py
 
 # Backtest with today's data
 python scripts/backtest_today.py
@@ -298,14 +307,18 @@ python scripts/backtest_today.py
 python scripts/backtest_diagnose.py
 ```
 
+The broader strategy bake-off (structurally different edges, OOS/regime kill-tests,
+swing paper-forward) lives under `scripts/research/`; see
+`docs/superpowers/results/2026-06-11-strategy-bakeoff.md` for findings.
+
 ## Architecture
 
 The bot runs as a single async process with these components:
 
 1. **Scheduler** (APScheduler) -- triggers scanner, monitor, and sync jobs on intervals
-2. **Scanner** (TradingView + FMP) -- finds candidate stocks matching momentum criteria
-3. **WebSocket** (DXLink) -- streams real-time 5-min bars and quotes for watchlist symbols
-4. **Signal Generator** -- evaluates bars against strategy rules, emits buy/sell signals
+2. **Scanner** (TradingView + FMP) -- finds candidate pre-market gappers matching the criteria
+3. **Streaming** (Schwab) -- streams real-time 1-min bars/quotes for watchlist symbols, aggregated internally to 5-min
+4. **Signal Generator** -- evaluates bars against the ORB rules, emits buy/sell signals
 5. **Executor** -- converts signals to broker orders with position sizing and risk checks
 6. **Position Monitor** -- tracks open positions, manages trailing stops, triggers exits
 7. **Risk Manager** -- enforces per-trade, portfolio, and daily loss limits
