@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy sgt-surge to remote Podman server
+# Deploy sgt-schwab to remote Podman server
 # Usage: ./deploy-remote.sh <remote-host> [--build]
 
 set -e
@@ -14,9 +14,9 @@ if [ -z "$REMOTE_HOST" ]; then
 fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_DIR="/opt/sgt-surge"
+REMOTE_DIR="/opt/sgt-schwab"
 
-echo "=== Deploying sgt-surge to $REMOTE_HOST ==="
+echo "=== Deploying sgt-schwab to $REMOTE_HOST ==="
 
 # Create remote directory structure
 echo "Creating remote directories..."
@@ -30,8 +30,8 @@ rsync -avz --delete \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.git/' \
-    --exclude 'logs/' \
-    --exclude 'state/' \
+    --exclude '/logs/' \
+    --exclude '/state/' \
     --exclude '.env' \
     "$PROJECT_DIR/" "$REMOTE_HOST:$REMOTE_DIR/"
 
@@ -56,7 +56,7 @@ ssh "$REMOTE_HOST" << EOF
     podman-compose down 2>/dev/null || true
 
     # Build if requested or if image doesn't exist
-    if [ "$BUILD_FLAG" = "--build" ] || ! podman image exists sgt-surge-bot:latest; then
+    if [ "$BUILD_FLAG" = "--build" ] || ! podman image exists sgt-schwab-bot:latest; then
         echo "Building image..."
         podman-compose build
     fi
@@ -68,15 +68,15 @@ ssh "$REMOTE_HOST" << EOF
     # Show status
     echo ""
     echo "=== Container Status ==="
-    podman ps -a --filter "name=sgt-surge"
+    podman ps -a --filter "name=sgt-schwab"
 
     echo ""
     echo "=== Recent Logs ==="
     sleep 2
-    podman logs --tail 20 sgt-surge-bot
+    podman logs --tail 20 sgt-schwab-bot
 EOF
 
 echo ""
 echo "=== Deployment Complete ==="
-echo "View logs: ssh $REMOTE_HOST 'podman logs -f sgt-surge-bot'"
+echo "View logs: ssh $REMOTE_HOST 'podman logs -f sgt-schwab-bot'"
 echo "Stop: ssh $REMOTE_HOST 'cd $REMOTE_DIR/deploy && podman-compose down'"

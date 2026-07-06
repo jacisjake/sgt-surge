@@ -18,13 +18,13 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.bot.config import get_bot_config
-from src.bot.main import TradingBot, run_bot
+from src.bot.main import TradingBot
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Sgt Surge - Momentum Day Trading Bot",
+        description="Sgt Schwab - ORB Momentum Day Trading Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -33,12 +33,13 @@ Examples:
     python scripts/run_bot.py --status           # Show account status
 
 Environment variables (or in .env):
-    TT_CLIENT_ID         - tastytrade OAuth client ID
-    TT_CLIENT_SECRET     - tastytrade OAuth client secret
-    TT_REFRESH_TOKEN     - tastytrade OAuth refresh token
-    TT_ACCOUNT_NUMBER    - tastytrade account number
-    TRADING_MODE         - paper or live (default: paper)
-    FMP_API_KEY          - Financial Modeling Prep API key (optional)
+    SCHWAB_APP_KEY          - Schwab developer app key
+    SCHWAB_APP_SECRET       - Schwab developer app secret
+    SCHWAB_OAUTH_REDIRECT_URI - OAuth callback URL
+    SCHWAB_TOKEN_PATH       - Path to persisted OAuth token JSON
+    SCHWAB_ACCOUNT_HASH     - Pinned account hash (optional)
+    TRADING_MODE            - dry_run or live (default: dry_run)
+    FMP_API_KEY             - Financial Modeling Prep API key (optional)
 
 See .env.example for all available settings.
         """,
@@ -56,12 +57,6 @@ See .env.example for all available settings.
         help="Show current account and position status",
     )
 
-    parser.add_argument(
-        "--check-signals",
-        action="store_true",
-        help="Check for signals once and exit",
-    )
-
     return parser.parse_args()
 
 
@@ -77,39 +72,46 @@ def show_config():
     print()
     print("Risk Settings:")
     print(f"  Max Position Risk: {config.max_position_risk_pct:.1%}")
+    print(f"  Max Portfolio Risk: {config.max_portfolio_risk_pct:.1%}")
     print(f"  Max Drawdown: {config.max_drawdown_pct:.1%}")
     print(f"  Max Positions: {config.max_positions}")
+    print(f"  Max Daily Trades: {config.max_daily_trades}")
+    print(f"  Max Position % of BP: {config.max_position_pct_of_buying_power:.0%}")
     print()
     print("Scheduler:")
-    print(f"  Stock Check Interval: {config.stock_check_interval_minutes} min")
-    print(f"  Crypto Check Interval: {config.crypto_check_interval_minutes} min")
-    print(f"  Position Monitor: {config.position_monitor_interval_minutes} min")
+    print(f"  Scanner Interval: {config.stock_check_interval_minutes} min")
+    print(f"  Position Monitor: {config.position_monitor_interval_seconds}s")
+    print(f"  Broker Sync: {config.broker_sync_interval_minutes} min")
+    print(f"  Scanner Refresh: {config.scanner_refresh_interval_minutes} min")
     print()
-    print("Stock Strategy (MACD):")
-    print(f"  Fast Period: {config.macd_fast_period} days")
-    print(f"  Slow Period: {config.macd_slow_period} days")
-    print(f"  Signal Period: {config.macd_signal_period}x")
+    print("Scanner:")
+    print(f"  Price Range: ${config.scanner_min_price:.2f} - ${config.scanner_max_price:.2f}")
+    print(f"  Min Change: {config.scanner_min_change_pct:.0f}%")
+    print(f"  Min Dollar Volume: ${config.scanner_min_dollar_volume:,.0f}")
+    print(f"  Float Filter: {'ON' if config.scanner_enable_float_filter else 'OFF'}")
+    print(f"  Min Float: {config.scanner_min_float_millions}M shares")
+    print()
+    print("Strategy:")
+    print(f"  Timeframe: {config.stock_timeframe}")
     print(f"  ATR Stop Multiplier: {config.stock_atr_stop_multiplier}x")
-    print()
-    print("Crypto Strategy (Mean Reversion):")
-    print(f"  RSI Period: {config.crypto_rsi_period}")
-    print(f"  RSI Oversold: {config.crypto_rsi_oversold}")
-    print(f"  RSI Exit: {config.crypto_rsi_exit}")
-    print(f"  BB Period: {config.crypto_bb_period}")
-    print()
-    print("Watchlists:")
-    print(f"  Stocks: {config.stock_symbols}")
-    print(f"  Crypto: {config.crypto_symbols}")
+    print(f"  Risk/Reward Target: {config.risk_reward_target}R")
     print()
     print("=" * 60)
 
 
 async def show_status():
     """Display current account and position status."""
-    from src.core.tastytrade_client import TastytradeClient
+    from src.core.schwab_client import SchwabClient
     from src.core.position_manager import PositionManager
 
-    client = TastytradeClient()
+    cfg = get_bot_config()
+    client = SchwabClient(
+        app_key=cfg.schwab_app_key,
+        app_secret=cfg.schwab_app_secret,
+        callback_url=cfg.schwab_oauth_redirect_uri,
+        token_path=cfg.schwab_token_path,
+        pinned_account_hash=cfg.schwab_account_hash,
+    )
     position_manager = PositionManager()
 
     print("=" * 60)
@@ -162,74 +164,10 @@ async def show_status():
     print("=" * 60)
 
 
-async def check_signals_once():
-    """Check for signals once and display results."""
-    from src.bot.config import get_bot_config
-    from src.bot.signals.macd import MACDStrategy
-    from src.bot.signals.mean_reversion import MeanReversionStrategy
-    from src.core.tastytrade_client import TastytradeClient
-
-    config = get_bot_config()
-    client = TastytradeClient()
-
-    stock_strategy = MACDStrategy(
-        fast_period=config.macd_fast_period,
-        slow_period=config.macd_slow_period,
-        signal_period=config.macd_signal_period,
-        atr_stop_multiplier=config.stock_atr_stop_multiplier,
-    )
-    crypto_strategy = MeanReversionStrategy(
-        rsi_period=config.crypto_rsi_period,
-        rsi_oversold=config.crypto_rsi_oversold,
-    )
-
-    print("=" * 60)
-    print("SIGNAL CHECK")
-    print("=" * 60)
-    print()
-
-    print("Checking stocks...")
-    for symbol in config.stock_symbols:
-        try:
-            bars = client.get_bars(symbol, timeframe=config.stock_timeframe, limit=50)
-            if bars is not None and len(bars) >= 25:
-                price = client.get_latest_price(symbol)
-                signal = stock_strategy.generate(symbol, bars, price)
-                if signal:
-                    print(f"  ✓ {symbol}: {signal.direction.value.upper()} @ ${signal.entry_price:.2f}")
-                    print(f"      Stop: ${signal.stop_price:.2f}, Target: ${signal.target_price:.2f}")
-                    print(f"      Strength: {signal.strength:.2f}, R:R: {signal.risk_reward_ratio:.1f}")
-                else:
-                    print(f"  - {symbol}: No signal")
-        except Exception as e:
-            print(f"  ! {symbol}: Error - {e}")
-
-    print()
-    print("Checking crypto...")
-    for symbol in config.crypto_symbols:
-        try:
-            bars = client.get_bars(symbol, timeframe="1Hour", limit=50)
-            if bars is not None and len(bars) >= 25:
-                price = client.get_latest_price(symbol)
-                signal = crypto_strategy.generate(symbol, bars, price)
-                if signal:
-                    print(f"  ✓ {symbol}: {signal.direction.value.upper()} @ ${signal.entry_price:.2f}")
-                    print(f"      Stop: ${signal.stop_price:.2f}, Target: ${signal.target_price:.2f}")
-                    print(f"      Strength: {signal.strength:.2f}")
-                    print(f"      RSI: {signal.metadata.get('rsi', 'N/A')}")
-                else:
-                    print(f"  - {symbol}: No signal")
-        except Exception as e:
-            print(f"  ! {symbol}: Error - {e}")
-
-    print()
-    print("=" * 60)
-
-
 async def run_with_api():
     """Run bot with API server."""
     import uvicorn
-    from src.bot.api import app, set_bot
+    from src.bot.web import app, set_bot
     from src.bot.config import get_bot_config
     from src.bot.main import TradingBot, setup_signal_handlers
 
@@ -266,10 +204,6 @@ def main():
 
     if args.status:
         asyncio.run(show_status())
-        return 0
-
-    if args.check_signals:
-        asyncio.run(check_signals_once())
         return 0
 
     # Run the bot with API

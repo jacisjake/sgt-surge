@@ -2,7 +2,7 @@
 Bot-specific configuration for momentum day trading.
 
 Extends base Settings with scanner, strategy, and scheduler parameters.
-Targeting $1-$10 low-float stocks (prefer $2+) on 5-min bars with pullback entries.
+Targeting $1-$10 low-float stocks (prefer $2+) on 5-min bars with ORB entries.
 """
 
 from pathlib import Path
@@ -18,7 +18,7 @@ class BotConfig(Settings):
     """
     Momentum day trading bot configuration.
 
-    Strategy: Ross Cameron-style pullback entries on low-float momentum stocks.
+    Strategy: ORB (Opening Range Breakout) on low-float momentum stocks.
     Timeframe: 5-minute bars, 6:00 AM - 3:55 PM ET.
     Goal: One high-quality trade per day, 10% account growth.
     """
@@ -29,6 +29,17 @@ class BotConfig(Settings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    # ── Schwab OAuth credentials ─────────────────────────────────────────
+
+    schwab_app_key: str = Field(default="", env="SCHWAB_APP_KEY")
+    schwab_app_secret: str = Field(default="", env="SCHWAB_APP_SECRET")
+    schwab_oauth_redirect_uri: str = Field(
+        default="https://ut.gitsum.rest/schwab/oauth/callback",
+        env="SCHWAB_OAUTH_REDIRECT_URI",
+    )
+    schwab_token_path: str = Field(default="state/schwab_token.json", env="SCHWAB_TOKEN_PATH")
+    schwab_account_hash: Optional[str] = Field(default=None, env="SCHWAB_ACCOUNT_HASH")
 
     # ── Scheduler Settings ──────────────────────────────────────────────
 
@@ -105,32 +116,13 @@ class BotConfig(Settings):
     )
     scanner_enable_float_filter: bool = Field(
         default=True,
-        description="Enable float filtering (requires FMP API key)",
+        description="Enable float filtering",
     )
     scanner_top_n: int = Field(
         default=20,
         ge=5,
         le=50,
         description="Number of gainers to fetch from screener",
-    )
-
-    # ── Catalyst / News Settings (5th Pillar) ────────────────────────────
-
-    scanner_enable_news_check: bool = Field(
-        default=True,
-        description="Check for news catalysts during enrichment",
-    )
-    scanner_news_lookback_hours: int = Field(
-        default=12,
-        ge=1,
-        le=48,
-        description="Hours to look back for news (12h covers overnight + pre-market)",
-    )
-    scanner_news_max_articles: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Max articles to fetch per symbol (minimize API usage)",
     )
 
     # ── TradingView Screener (Primary Scanner) ──────────────────────────
@@ -140,49 +132,25 @@ class BotConfig(Settings):
         description="Use TradingView as primary screener",
     )
 
-    # ── Press Release Scanner (Pre-Market Catalyst Detection) ────────────
-
-    enable_press_release_scanner: bool = Field(
-        default=True,
-        description="Enable pre-market press release scanning via RSS feeds + FMP",
-    )
-    press_release_scan_start: str = Field(
-        default="04:00",
-        description="When to start scanning press releases (ET, HH:MM). Earlier than premarket scan.",
-    )
-    press_release_scan_interval_minutes: int = Field(
-        default=5,
-        ge=2,
-        le=30,
-        description="How often to poll RSS feeds during pre-market (minutes)",
-    )
-    press_release_lookback_hours: int = Field(
-        default=16,
-        ge=4,
-        le=48,
-        description="Hours to look back for press releases (16h covers overnight + previous evening)",
-    )
-
     # ── MACD Strategy Parameters ────────────────────────────────────────
-    # Standard 12/26/9 MACD on 5-min bars
 
     macd_fast_period: int = Field(
         default=8,
         ge=3,
         le=20,
-        description="MACD fast EMA period (8 for faster response on volatile stocks)",
+        description="MACD fast EMA period",
     )
     macd_slow_period: int = Field(
         default=21,
         ge=10,
         le=50,
-        description="MACD slow EMA period (21 converges faster than 26)",
+        description="MACD slow EMA period",
     )
     macd_signal_period: int = Field(
         default=5,
         ge=1,
         le=20,
-        description="MACD signal line EMA period (5 for quicker crossovers)",
+        description="MACD signal line EMA period",
     )
     stock_timeframe: str = Field(
         default="5Min",
@@ -200,15 +168,15 @@ class BotConfig(Settings):
         le=30,
         description="ATR calculation period",
     )
-
-    # ── Pullback Pattern Parameters ─────────────────────────────────────
-
-    pullback_min_candles: int = Field(
-        default=2,
-        ge=1,
-        le=5,
-        description="Minimum candles in pullback before entry",
+    chandelier_multiplier: float = Field(
+        default=3.0,
+        ge=1.0,
+        le=6.0,
+        description="Chandelier exit ATR multiplier for progressive trailing stop",
     )
+
+    # ── Pullback Pattern Parameters (kept for trailing-stop logic) ──────
+
     pullback_max_candles: int = Field(
         default=15,
         ge=3,
@@ -219,7 +187,7 @@ class BotConfig(Settings):
         default=0.65,
         ge=0.20,
         le=0.80,
-        description="Maximum pullback retracement of surge (65% for volatile low-float stocks)",
+        description="Maximum pullback retracement of surge",
     )
     risk_reward_target: float = Field(
         default=2.0,
@@ -230,12 +198,6 @@ class BotConfig(Settings):
 
     # ── Signal Filtering ────────────────────────────────────────────────
 
-    min_signal_strength: float = Field(
-        default=0.5,
-        ge=0.3,
-        le=0.9,
-        description="Minimum signal strength to act on (0-1)",
-    )
     min_risk_reward: float = Field(
         default=1.0,
         ge=0.5,
@@ -274,45 +236,11 @@ class BotConfig(Settings):
         description="Max % of buying power to use per trade (cash account style)",
     )
 
-    # ── Crypto (disabled for day trading focus) ─────────────────────────
-
-    enable_crypto_trading: bool = Field(
-        default=False,
-        description="Enable crypto trading (disabled for momentum day trading)",
-    )
-    crypto_watchlist: str = Field(
-        default="BTC/USD,ETH/USD,SOL/USD",
-        description="Crypto symbols (not used when disabled)",
-    )
-
     # ── Watchlist (scanner-driven, no static list) ──────────────────────
 
     stock_watchlist: str = Field(
         default="",
         description="Static stock watchlist (empty = fully scanner-driven)",
-    )
-
-    # ── HMM Regime Gate ────────────────────────────────────────────────
-
-    enable_regime_gate: bool = Field(
-        default=False,
-        description="Gate entries on HMM market regime (block trades during bearish regimes)",
-    )
-    regime_symbol: str = Field(
-        default="SPY",
-        description="Market proxy symbol for regime detection",
-    )
-    regime_hmm_states: int = Field(
-        default=7,
-        ge=3,
-        le=10,
-        description="Number of HMM hidden states for regime model",
-    )
-    regime_history_days: int = Field(
-        default=730,
-        ge=90,
-        le=2000,
-        description="Days of history for regime training",
     )
 
     # ── WebSocket Settings ────────────────────────────────────────────
@@ -343,11 +271,6 @@ class BotConfig(Settings):
     def stock_symbols(self) -> list[str]:
         """Parse stock watchlist into list (may be empty if scanner-driven)."""
         return [s.strip().upper() for s in self.stock_watchlist.split(",") if s.strip()]
-
-    @property
-    def crypto_symbols(self) -> list[str]:
-        """Parse crypto watchlist into list."""
-        return [s.strip().upper() for s in self.crypto_watchlist.split(",") if s.strip()]
 
     @property
     def state_path(self) -> Path:

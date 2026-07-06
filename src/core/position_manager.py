@@ -44,6 +44,10 @@ class Position:
         """Set initial_stop_loss from stop_loss if not explicitly provided."""
         if self.initial_stop_loss is None and self.stop_loss is not None:
             self.initial_stop_loss = self.stop_loss
+        if self.highest_price == 0.0:
+            self.highest_price = self.entry_price
+        if self.lowest_price == float("inf"):
+            self.lowest_price = self.entry_price
 
     @property
     def initial_risk(self) -> float:

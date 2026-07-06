@@ -1,8 +1,8 @@
 """Core trading components."""
 
-from .tastytrade_client import TastytradeClient
+from .schwab_client import SchwabClient
+from .schwab_stream import SchwabStreamClient
 from .order_executor import OrderExecutor
 from .position_manager import PositionManager
-from .regime_detector import RegimeDetector
 
-__all__ = ["TastytradeClient", "OrderExecutor", "PositionManager", "RegimeDetector"]
+__all__ = ["SchwabClient", "SchwabStreamClient", "OrderExecutor", "PositionManager"]

@@ -21,7 +21,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 from src.bot.config import BotConfig
-from src.core.tastytrade_client import NYSE_HOLIDAYS
+from src.core.market_calendar import NYSE_HOLIDAYS
 
 ET = pytz.timezone("America/New_York")
 
@@ -53,6 +53,7 @@ class BotScheduler:
         self._broker_sync_callback: Optional[Callable] = None
         self._end_of_day_callback: Optional[Callable] = None
         self._daily_reset_callback: Optional[Callable] = None
+        self._or_lock_callback: Optional[Callable] = None
 
         # Track state
         self._is_running = False
@@ -71,6 +72,7 @@ class BotScheduler:
         press_release_scan: Optional[Callable] = None,
         end_of_day: Optional[Callable] = None,
         daily_reset: Optional[Callable] = None,
+        or_lock: Optional[Callable] = None,
     ) -> None:
         """
         Set job callbacks.
@@ -82,11 +84,13 @@ class BotScheduler:
             press_release_scan: Callback for pre-market press release RSS scanning
             end_of_day: Callback for end-of-day cleanup (close positions, cancel orders)
             daily_reset: Callback for daily reset (clear counters, refresh state)
+            or_lock: Callback to lock the 9:30-9:45 ET opening range at 9:45:30 ET
         """
         self._momentum_scan_callback = momentum_scan
         self._press_release_scan_callback = press_release_scan
         self._end_of_day_callback = end_of_day
         self._daily_reset_callback = daily_reset
+        self._or_lock_callback = or_lock
 
     def setup_jobs(self) -> None:
         """Configure all scheduled jobs for momentum day trading."""
@@ -161,6 +165,22 @@ class BotScheduler:
                 ),
                 id="daily_reset",
                 name="Daily Reset",
+                replace_existing=True,
+            )
+
+        # ── 8. OR-lock: 9:45:30 AM ET ────────────────────────────────────
+        if self._or_lock_callback:
+            self.scheduler.add_job(
+                self._run_or_lock,
+                CronTrigger(
+                    day_of_week="mon-fri",
+                    hour=9,
+                    minute=45,
+                    second=30,
+                    timezone="America/New_York",
+                ),
+                id="or_lock",
+                name="ORB: lock 9:30-9:45 range",
                 replace_existing=True,
             )
 
@@ -265,6 +285,15 @@ class BotScheduler:
                 await self._daily_reset_callback()
             except Exception as e:
                 logger.error(f"Daily reset error: {e}")
+
+    async def _run_or_lock(self) -> None:
+        """Lock the 9:30-9:45 ET opening range at 9:45:30 ET."""
+        if self._or_lock_callback:
+            try:
+                logger.info("Locking opening range (9:30-9:45 ET)...")
+                await self._or_lock_callback()
+            except Exception as e:
+                logger.error(f"OR-lock error: {e}")
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 

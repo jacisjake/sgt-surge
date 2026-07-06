@@ -15,7 +15,7 @@ from typing import Optional
 
 from loguru import logger
 
-from .tastytrade_client import TastytradeClient
+from .schwab_client import SchwabClient
 
 
 class OrderStatus(str, Enum):
@@ -39,6 +39,7 @@ class OrderResult:
     filled_qty: float = 0.0
     filled_price: Optional[float] = None
     error: Optional[str] = None
+    dry_run: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +49,7 @@ class OrderResult:
             "filled_qty": self.filled_qty,
             "filled_price": self.filled_price,
             "error": self.error,
+            "dry_run": self.dry_run,
         }
 
 
@@ -79,8 +81,13 @@ class OrderExecutor:
         "504",
     ]
 
-    def __init__(self, client: TastytradeClient):
+    def __init__(self, client: SchwabClient, trading_mode=None):
+        from config.settings import TradingMode
+
         self.client = client
+        if trading_mode is None:
+            trading_mode = TradingMode.LIVE
+        self.trading_mode = trading_mode
 
     def execute_market_order(
         self,
@@ -93,7 +100,7 @@ class OrderExecutor:
         Execute a market order with retries.
 
         Args:
-            symbol: Stock or crypto symbol
+            symbol: Stock symbol
             qty: Quantity to trade
             side: "buy" or "sell"
             wait_for_fill: Whether to wait for order to fill
@@ -122,7 +129,7 @@ class OrderExecutor:
         Execute a limit order with retries.
 
         Args:
-            symbol: Stock or crypto symbol
+            symbol: Stock symbol
             qty: Quantity to trade
             side: "buy" or "sell"
             limit_price: Limit price
@@ -180,12 +187,18 @@ class OrderExecutor:
 
         Retries on transient failures, fails fast on permanent errors.
         """
+        from config.settings import TradingMode
+
+        # Dry-run intercept: fabricate a fill at the current quote price
+        if self.trading_mode == TradingMode.DRY_RUN:
+            return self._dry_run_fill(symbol=symbol, qty=qty, side=side)
+
         last_error = None
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 # Submit order based on type
-                order = self._submit_order(
+                order_id = self._submit_order(
                     order_type=order_type,
                     symbol=symbol,
                     qty=qty,
@@ -195,18 +208,18 @@ class OrderExecutor:
                     extended_hours=extended_hours,
                 )
 
-                if order is None:
+                if order_id is None:
                     raise ValueError("Order submission returned None")
 
-                logger.debug(f"Order submitted: {order['id']} (attempt {attempt})")
+                logger.debug(f"Order submitted: {order_id} (attempt {attempt})")
 
                 # Wait for fill if requested
                 if wait_for_fill:
-                    return self._wait_for_fill(order["id"])
+                    return self._wait_for_fill(order_id)
                 else:
                     return OrderResult(
                         success=True,
-                        order_id=order["id"],
+                        order_id=order_id,
                         status=OrderStatus.SUBMITTED,
                     )
 
@@ -233,6 +246,25 @@ class OrderExecutor:
             error=last_error,
         )
 
+    def _dry_run_fill(self, symbol: str, qty: float, side: str) -> OrderResult:
+        """Fabricate a fill at the current quote price without sending any order."""
+        from datetime import datetime
+
+        price = self.client.get_latest_price(symbol)
+        order_id = f"DRYRUN-{symbol}-{datetime.utcnow().isoformat()}"
+        logger.info(
+            f"[DRY RUN] {side.upper()} {qty} {symbol} @ {price:.4f} (fabricated fill)"
+        )
+        return OrderResult(
+            success=True,
+            order_id=order_id,
+            status=OrderStatus.FILLED,
+            filled_qty=qty,
+            filled_price=price,
+            error=None,
+            dry_run=True,
+        )
+
     def _submit_order(
         self,
         order_type: str,
@@ -242,26 +274,24 @@ class OrderExecutor:
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
         extended_hours: bool = False,
-    ) -> dict:
-        """Submit order to tastytrade based on type."""
-        # Check if asset supports fractional shares
-        if not self.client.is_fractionable(symbol):
-            # Round to whole shares for non-fractionable assets
-            original_qty = qty
-            qty = int(qty)
-            if qty < 1:
-                raise ValueError(f"Cannot buy less than 1 share of {symbol} (non-fractionable)")
-            if qty != original_qty:
-                logger.info(f"Rounded {symbol} qty from {original_qty:.6f} to {qty} (non-fractionable)")
+    ) -> str:
+        """Submit order to Schwab based on type. Returns order_id string."""
+        # Round to whole shares (Schwab does not support fractional equity orders)
+        original_qty = qty
+        qty = int(qty)
+        if qty < 1:
+            raise ValueError(f"Cannot buy less than 1 share of {symbol}")
+        if qty != original_qty:
+            logger.info(
+                f"Rounded {symbol} qty from {original_qty:.6f} to {qty} (whole shares only)"
+            )
 
         if order_type == "market":
             return self.client.submit_market_order(symbol, qty, side)
         elif order_type == "limit":
             if limit_price is None:
                 raise ValueError("limit_price required for limit orders")
-            return self.client.submit_limit_order(
-                symbol, qty, side, limit_price, extended_hours=extended_hours
-            )
+            return self.client.submit_limit_order(symbol, qty, side, limit_price)
         elif order_type == "stop_limit":
             if stop_price is None or limit_price is None:
                 raise ValueError("stop_price and limit_price required for stop-limit")
@@ -272,20 +302,38 @@ class OrderExecutor:
             raise ValueError(f"Unknown order type: {order_type}")
 
     def _wait_for_fill(self, order_id: str) -> OrderResult:
-        """Wait for order to fill or timeout."""
+        """Wait for order to fill or timeout.
+
+        Schwab order statuses (lower-cased): filled, working,
+        pending_activation, queued, awaiting_parent_order, canceled,
+        rejected, expired, replaced. The executor must keep polling on
+        any non-terminal status -- including the "not found yet" window
+        right after submit. Treating None or unknown statuses as terminal
+        causes the bot to abandon orders that Schwab actually fills, as
+        observed on the IOVA trade 2026-06-04.
+        """
         start_time = time.time()
+        consecutive_not_found = 0
 
         while time.time() - start_time < self.FILL_TIMEOUT_SECONDS:
-            orders = self.client.get_orders(status="all")
-            order = next((o for o in orders if o["id"] == order_id), None)
+            order = self.client.get_order(order_id)
 
             if order is None:
-                return OrderResult(
-                    success=False,
-                    order_id=order_id,
-                    status=OrderStatus.FAILED,
-                    error="Order not found",
-                )
+                # Eventual-consistency window or stale ID. Keep polling
+                # until the order resolves or the timeout fires. Only
+                # treat as truly missing after enough consecutive misses
+                # that we believe Schwab really doesn't have it.
+                consecutive_not_found += 1
+                if consecutive_not_found >= 20:  # ~10s of misses
+                    return OrderResult(
+                        success=False,
+                        order_id=order_id,
+                        status=OrderStatus.FAILED,
+                        error="Order not found after 10s of polling",
+                    )
+                time.sleep(self.FILL_CHECK_INTERVAL)
+                continue
+            consecutive_not_found = 0
 
             status = order["status"]
 
@@ -295,25 +343,36 @@ class OrderExecutor:
                     order_id=order_id,
                     status=OrderStatus.FILLED,
                     filled_qty=order["filled_qty"],
-                    filled_price=order["filled_avg_price"],
+                    filled_price=order.get("price"),
                 )
-            elif status == "partially_filled":
-                # Continue waiting
+            # Non-terminal statuses to keep polling on
+            elif status in {"partially_filled", "working", "pending_activation",
+                            "queued", "awaiting_parent_order", "accepted",
+                            "pending_replace", "pending_cancel"}:
                 pass
-            elif status in ["cancelled", "expired", "rejected"]:
+            # Terminal failure statuses (accept both spellings of "canceled")
+            elif status in {"cancelled", "canceled", "expired", "rejected", "replaced"}:
+                # Normalize "canceled" -> "cancelled" for the enum.
+                mapped = "cancelled" if status in {"cancelled", "canceled"} else status
                 return OrderResult(
                     success=False,
                     order_id=order_id,
-                    status=OrderStatus(status),
+                    status=OrderStatus(mapped),
                     filled_qty=order["filled_qty"],
                     error=f"Order {status}",
+                )
+            else:
+                # Unknown status -- keep polling and log so we can
+                # extend the recognized set if Schwab adds new states.
+                logger.warning(
+                    f"[EXECUTOR] {order_id}: unknown status {status!r}; "
+                    f"continuing to poll"
                 )
 
             time.sleep(self.FILL_CHECK_INTERVAL)
 
         # Timeout - check final status
-        orders = self.client.get_orders(status="all")
-        order = next((o for o in orders if o["id"] == order_id), None)
+        order = self.client.get_order(order_id)
 
         if order and order["filled_qty"] > 0:
             # Partial fill
@@ -322,7 +381,7 @@ class OrderExecutor:
                 order_id=order_id,
                 status=OrderStatus.PARTIALLY_FILLED,
                 filled_qty=order["filled_qty"],
-                filled_price=order["filled_avg_price"],
+                filled_price=order.get("price"),
             )
 
         # Cancel the order
@@ -354,8 +413,7 @@ class OrderExecutor:
 
     def get_order_status(self, order_id: str) -> Optional[OrderResult]:
         """Get current status of an order."""
-        orders = self.client.get_orders(status="all")
-        order = next((o for o in orders if o["id"] == order_id), None)
+        order = self.client.get_order(order_id)
 
         if order is None:
             return None
@@ -376,5 +434,5 @@ class OrderExecutor:
             order_id=order_id,
             status=status_map.get(order["status"], OrderStatus.PENDING),
             filled_qty=order["filled_qty"],
-            filled_price=order["filled_avg_price"],
+            filled_price=order.get("price"),
         )

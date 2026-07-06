@@ -27,9 +27,9 @@ if TYPE_CHECKING:
     from src.bot.processor import SignalProcessor
     from src.bot.signals.base import SignalGenerator
     from src.bot.state.persistence import BotState
-    from src.core.tastytrade_client import TastytradeClient
+    from src.core.schwab_client import SchwabClient
     from src.core.position_manager import PositionManager
-    from src.core.tastytrade_ws import TastytradeWSClient
+    from src.core.schwab_stream import SchwabStreamClient
     from src.risk.portfolio_limits import PortfolioLimits
 
 
@@ -52,8 +52,8 @@ class StreamHandler:
         position_manager: "PositionManager",
         portfolio_limits: "PortfolioLimits",
         bot_state: "BotState",
-        client: "TastytradeClient",
-        ws_client: "TastytradeWSClient",
+        client: "SchwabClient",
+        ws_client: "SchwabStreamClient",
         config,
         strategies: Optional[dict] = None,
     ):
@@ -115,32 +115,30 @@ class StreamHandler:
 
     async def on_bar(self, bar: dict) -> None:
         """
-        Handle incoming native 5-min candle from DXLink.
+        Handle incoming 5-min candle.
 
-        DXLink sends 5-min candles directly — no aggregation needed.
-
-        Bar format (normalized by TastytradeWSClient):
-        {"T": "b", "S": "AAPL", "o": 150.25, "h": 150.75, "l": 150.10,
-         "c": 150.50, "v": 125000, "t": "2026-02-10T14:35:00+00:00", "n": 0, "vw": 150.40}
+        SchwabStreamClient's BarAggregator emits long-form keys
+        (symbol/timestamp/open/high/low/close/volume). The old code
+        looked for tastytrade-DXLink short-form (S/t/o/h/l/c/v) and
+        silently dropped every bar; we tolerate both for safety.
         """
-        symbol = bar.get("S")
+        symbol = bar.get("symbol") or bar.get("S")
         if not symbol:
             return
 
-        # Parse timestamp
-        timestamp_str = bar.get("t", "")
+        timestamp_str = bar.get("timestamp") or bar.get("t") or ""
         try:
-            bar_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
+            bar_time = datetime.fromisoformat(str(timestamp_str).replace("Z", "+00:00"))
+        except (ValueError, AttributeError, TypeError):
             bar_time = datetime.now(timezone.utc)
 
         five_min_bar = {
-            "open": float(bar.get("o", 0)),
-            "high": float(bar.get("h", 0)),
-            "low": float(bar.get("l", 0)),
-            "close": float(bar.get("c", 0)),
-            "volume": int(bar.get("v", 0)),
-            "vwap": float(bar.get("vw", 0)),
+            "open": float(bar.get("open") or bar.get("o") or 0),
+            "high": float(bar.get("high") or bar.get("h") or 0),
+            "low": float(bar.get("low") or bar.get("l") or 0),
+            "close": float(bar.get("close") or bar.get("c") or 0),
+            "volume": int(bar.get("volume") or bar.get("v") or 0),
+            "vwap": float(bar.get("vwap") or bar.get("vw") or 0),
         }
 
         # Append to rolling 5-min DataFrame
@@ -158,18 +156,61 @@ class StreamHandler:
         if len(self._five_min_bars[symbol]) > 100:
             self._five_min_bars[symbol] = self._five_min_bars[symbol].iloc[-100:]
 
-        logger.debug(
+        logger.info(
             f"[STREAM] {symbol} 5-min bar: "
             f"O={five_min_bar['open']:.2f} H={five_min_bar['high']:.2f} "
             f"L={five_min_bar['low']:.2f} C={five_min_bar['close']:.2f} "
             f"V={five_min_bar['volume']:,}"
         )
 
-        # Run signal generation
-        await self._check_signal(symbol)
+        # ORB is event-driven: hand the bar straight to strategy.on_bar.
+        await self._check_signal_event_driven(symbol, bar_time, five_min_bar)
 
         # Check strategy exit for open position (MACD exhaustion, etc.)
         await self._check_strategy_exit(symbol)
+
+    async def _check_signal_event_driven(
+        self, symbol: str, bar_time: datetime, five_min_bar: dict
+    ) -> None:
+        """Push the closed 5-min bar at ORB.on_bar; process any returned Signal."""
+        async with self._processing_lock:
+            if self._daily_trades_today >= self._max_daily_trades:
+                return
+            open_positions = self.position_manager.get_open_positions()
+            if len(open_positions) >= self.config.max_positions:
+                return
+            if self.position_manager.has_position(symbol):
+                return
+            if self.bot_state.has_active_signal(symbol):
+                return
+
+            normalized_bar = {
+                "symbol": symbol,
+                "timestamp": bar_time.isoformat(),
+                "open": five_min_bar["open"],
+                "high": five_min_bar["high"],
+                "low": five_min_bar["low"],
+                "close": five_min_bar["close"],
+                "volume": five_min_bar["volume"],
+            }
+
+            try:
+                gen_signal = self.strategy.on_bar(normalized_bar)
+            except Exception as e:
+                logger.error(f"[STREAM] {symbol}: ORB.on_bar error: {e}")
+                return
+
+            if gen_signal is None:
+                return
+
+            gen_signal.metadata["source"] = "stream"
+            logger.info(
+                f"[STREAM SIGNAL] {symbol}: {gen_signal.direction.value} "
+                f"entry=${gen_signal.entry_price:.2f} "
+                f"stop=${gen_signal.stop_price:.2f} "
+                f"target=${gen_signal.target_price:.2f}"
+            )
+            await self._process_signal(gen_signal)
 
     async def _check_signal(self, symbol: str) -> None:
         """
@@ -229,13 +270,8 @@ class StreamHandler:
             if gen_signal is None:
                 return
 
-            # Inject catalyst metadata
-            catalyst = self._catalysts.get(symbol, {})
-            gen_signal.metadata["has_catalyst"] = bool(catalyst)
-            gen_signal.metadata["news_headline"] = catalyst.get("headline", "")
-            gen_signal.metadata["news_count"] = catalyst.get("count", 0)
-            gen_signal.metadata["news_source"] = catalyst.get("source", "")
-            gen_signal.metadata["source"] = "stream"  # Mark as stream-generated
+            # Mark as stream-generated
+            gen_signal.metadata["source"] = "stream"
 
             logger.info(
                 f"[STREAM SIGNAL] {symbol}: {gen_signal.direction.value} "
@@ -362,16 +398,17 @@ class StreamHandler:
 
     async def on_quote(self, quote: dict) -> None:
         """
-        Handle incoming quote from DXLink WebSocket.
+        Handle incoming quote from the Schwab stream.
 
-        Checks position exits (stops, targets, trailing) in real-time.
+        SchwabStreamClient emits {symbol, bid, ask, last, timestamp}.
+        Tolerate the old DXLink short-form keys for safety.
         """
-        symbol = quote.get("S")
+        symbol = quote.get("symbol") or quote.get("S")
         if not symbol:
             return
 
-        bid = float(quote.get("bp", 0))
-        ask = float(quote.get("ap", 0))
+        bid = float(quote.get("bid") or quote.get("bp") or 0)
+        ask = float(quote.get("ask") or quote.get("ap") or 0)
 
         # Calculate midpoint as "price"
         if bid > 0 and ask > 0:
@@ -513,14 +550,16 @@ class StreamHandler:
         new_symbols = set(symbols)
         old_symbols = set(self._watchlist)
 
-        # Always include open position symbols for quote monitoring
+        # Always include open position symbols. Subscribe BARS to the same
+        # union as quotes -- the prior code only sent scanner candidates to
+        # the bars channel, which unsubscribed locked ORB symbols and open
+        # positions and silently broke the breakout watch.
         pos_symbols = {p.symbol for p in self.position_manager.get_open_positions()}
-        all_quote_symbols = new_symbols | pos_symbols
+        all_symbols = new_symbols | pos_symbols
 
-        # Update subscriptions
         await self.ws_client.update_subscriptions(
-            bars=list(new_symbols),
-            quotes=list(all_quote_symbols),
+            bars=list(all_symbols),
+            quotes=list(all_symbols),
         )
 
         # Backfill 5-min bars for newly added symbols
@@ -594,6 +633,39 @@ class StreamHandler:
     def daily_trades_today(self, value: int) -> None:
         """Set daily trade count (for sync with TradingBot)."""
         self._daily_trades_today = value
+
+    def get_close_series(self) -> dict[str, list[float]]:
+        """Closing prices of the buffered 5-min bars, per symbol.
+
+        Lightweight feed for the dashboard's sparkline column — closes only,
+        skipping symbols whose buffer is still empty.
+        """
+        return {
+            s: [float(c) for c in df["close"].tolist()]
+            for s, df in self._five_min_bars.items()
+            if df is not None and not df.empty
+        }
+
+    def get_ohlcv(self, symbol: str) -> list[dict]:
+        """Full OHLCV of the buffered 5-min bars for one symbol.
+
+        Feeds the dashboard's detail popup. Returns [] when nothing is
+        buffered yet for the symbol.
+        """
+        df = self._five_min_bars.get(symbol)
+        if df is None or df.empty:
+            return []
+        out = []
+        for ts, row in df.iterrows():
+            out.append({
+                "t": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "o": float(row["open"]),
+                "h": float(row["high"]),
+                "l": float(row["low"]),
+                "c": float(row["close"]),
+                "v": float(row["volume"]),
+            })
+        return out
 
     def get_status(self) -> dict:
         """Get stream handler status."""

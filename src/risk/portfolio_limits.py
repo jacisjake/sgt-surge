@@ -138,9 +138,15 @@ class PortfolioLimits:
         # Update peak
         self._peak_equity = max(self._peak_equity, current_equity)
 
-        # Initialize daily stats if new day
+        # Initialize daily stats on new day OR first-ever call (DailyStats()
+        # defaults to today's date with starting_equity=0, so the date check
+        # alone misses the first update of the process's life).
         today = date.today()
-        if self._daily_stats.date != today:
+        needs_init = (
+            self._daily_stats.date != today
+            or self._daily_stats.starting_equity == 0.0
+        )
+        if needs_init:
             self._daily_stats = DailyStats(
                 date=today,
                 starting_equity=current_equity,

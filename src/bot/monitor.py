@@ -12,7 +12,7 @@ import pandas as pd
 from loguru import logger
 
 from src.bot.signals.base import SignalDirection, SignalGenerator
-from src.core.tastytrade_client import TastytradeClient
+from src.core.schwab_client import SchwabClient
 from src.core.position_manager import Position, PositionManager, PositionSide
 
 
@@ -50,7 +50,7 @@ class PositionMonitor:
 
     def __init__(
         self,
-        client: TastytradeClient,
+        client: SchwabClient,
         position_manager: PositionManager,
         strategies: Optional[dict[str, SignalGenerator]] = None,
         trade_executor=None,
@@ -59,7 +59,7 @@ class PositionMonitor:
         Initialize position monitor.
 
         Args:
-            client: tastytrade API client
+            client: Schwab API client
             position_manager: Position tracking
             strategies: Optional dict of strategy name -> generator for exit signals
             trade_executor: TradeExecutor for broker stop management
@@ -304,10 +304,6 @@ class PositionMonitor:
         """
         # Get strategy that opened the position (stored in metadata or default)
         strategy_name = getattr(position, "strategy", None)
-
-        # If no strategy name, default to momentum_pullback
-        if not strategy_name:
-            strategy_name = "momentum_pullback"
 
         strategy = self.strategies.get(strategy_name)
         if not strategy:

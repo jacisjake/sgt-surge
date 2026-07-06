@@ -10,7 +10,6 @@ from typing import Optional
 
 from src.bot.config import BotConfig
 from src.bot.signals.base import Signal, SignalDirection
-from src.core.regime_detector import RegimeDetector
 from src.risk.portfolio_limits import PortfolioLimits, TradingAction
 from src.risk.position_sizer import PositionSizer
 
@@ -47,7 +46,6 @@ class TradeParams:
             "target_price": self.target_price,
             "order_type": self.order_type,
             "time_in_force": self.time_in_force,
-            "signal_strength": self.signal.strength,
             "strategy": self.signal.strategy,
             "extended_hours": self.extended_hours,
         }
@@ -78,7 +76,6 @@ class SignalProcessor:
         config: BotConfig,
         position_sizer: PositionSizer,
         portfolio_limits: PortfolioLimits,
-        regime_detector: Optional[RegimeDetector] = None,
     ):
         """
         Initialize signal processor.
@@ -87,12 +84,10 @@ class SignalProcessor:
             config: Bot configuration
             position_sizer: Position sizing calculator
             portfolio_limits: Portfolio risk limits
-            regime_detector: Optional HMM regime detector for market-level gating
         """
         self.config = config
         self.position_sizer = position_sizer
         self.portfolio_limits = portfolio_limits
-        self.regime_detector = regime_detector
 
     # PDT limit: brokers block the 4th day trade in 5 days for margin accounts under $25K
     PDT_MAX_DAY_TRADES = 3
@@ -157,16 +152,13 @@ class SignalProcessor:
 
         # Step 3: Calculate position size
         # Use momentum sizing for day trading (majority of buying power)
-        # Scale by signal strength: weak signals (0.5) get 50% size, strong (1.0) get full
         max_bp_pct = getattr(self.config, 'max_position_pct_of_buying_power', 0.90)
-        strength_scalar = max(signal.strength, 0.5)  # Floor at 50% size
-        scaled_bp_pct = max_bp_pct * strength_scalar
         size_result = self.position_sizer.calculate_momentum_size(
             account_equity=account_equity,
             entry_price=signal.entry_price,
             stop_price=signal.stop_price,
             buying_power=buying_power,
-            max_equity_pct=scaled_bp_pct,
+            max_equity_pct=max_bp_pct,
         )
 
         if size_result.shares < 0.001:  # Effectively zero
@@ -201,6 +193,9 @@ class SignalProcessor:
         if use_extended_hours:
             order_type = "limit"
         
+        # Determine if crypto (for TIF logic)
+        is_crypto = "/" in signal.symbol or signal.symbol.endswith("USD")
+
         trade_params = TradeParams(
             symbol=signal.symbol,
             side="buy" if signal.direction == SignalDirection.LONG else "sell",
@@ -209,7 +204,7 @@ class SignalProcessor:
             stop_price=signal.stop_price,
             target_price=signal.target_price,
             order_type=order_type,  # Adjusted for extended hours
-            time_in_force="gtc" if signal.is_crypto else "day",
+            time_in_force="gtc" if is_crypto else "day",
             signal=signal,
             extended_hours=use_extended_hours,
         )
@@ -227,37 +222,25 @@ class SignalProcessor:
 
         Returns rejection reason or None if passed.
         """
-        # Check regime gate (market-level filter)
-        if (
-            self.config.enable_regime_gate
-            and self.regime_detector is not None
-            and self.regime_detector.trained
-        ):
-            if self.regime_detector.is_bearish():
-                status = self.regime_detector.get_status()
-                return (
-                    f"Regime gate: {status['label']} ({status['category']}, "
-                    f"{status['confidence']:.0%} confidence)"
-                )
-
         # Check if shorting is allowed
         if signal.direction.value == "short" and not self.config.allow_short_selling:
             return "Short selling disabled"
-
-        # Check strength
-        if signal.strength < self.config.min_signal_strength:
-            return f"Signal too weak: {signal.strength:.2f} < {self.config.min_signal_strength}"
 
         # Check R:R ratio (use small epsilon for floating point comparison)
         if signal.risk_reward_ratio:
             if signal.risk_reward_ratio < self.config.min_risk_reward - 0.01:
                 return f"R:R too low: {signal.risk_reward_ratio:.2f} < {self.config.min_risk_reward}"
 
-        # Check risk percent isn't too high
-        # 7% max stop width — tight enough to protect the small account,
-        # loose enough not to reject too many valid momentum setups
-        max_stop_pct = 0.07
-        if signal.risk_percent > max_stop_pct:
-            return f"Stop too wide: {signal.risk_percent:.1%} risk (max {max_stop_pct:.0%})"
+        # Check risk percent isn't too high.
+        # 15% max stop width: 7% rejected every ORB signal observed in the
+        # 2026-06-02..06-04 window (sub-dollar gappers naturally produce
+        # 20-50% stop distance as a fraction of entry). A 3-day sweep of
+        # 7/10/15/25/50% showed 10-15% captures most of the upside without
+        # admitting parabolic-top entries that wouldn't size meaningfully
+        # against MAX_POSITION_RISK_PCT anyway. See scripts/backtest_orb.py.
+        max_stop_pct = 0.15
+        risk_pct = signal.risk_amount / signal.entry_price
+        if risk_pct > max_stop_pct:
+            return f"Stop too wide: {risk_pct:.1%} risk (max {max_stop_pct:.0%})"
 
         return None

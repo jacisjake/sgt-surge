@@ -14,34 +14,28 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, time as dtime, timezone
 from typing import Optional
 
 from loguru import logger
-
-# Silence the tastytrade SDK's verbose debug logging (logs every WebSocket frame)
-logging.getLogger("tastytrade").setLevel(logging.WARNING)
 
 from src.bot.config import BotConfig, get_bot_config
 from src.bot.executor import TradeExecutor
 from src.bot.float_provider import FloatDataProvider
 from src.bot.monitor import PositionMonitor
-from src.bot.press_release_scanner import PressReleaseScanner
 from src.bot.processor import SignalProcessor
 from src.bot.scheduler import BotScheduler
 from src.bot.screener import MomentumScreener
 from src.bot.tradingview_screener import TradingViewScreener
 from src.bot.signals.base import Signal
-from src.bot.signals.momentum_pullback import MomentumPullbackStrategy
-from src.bot.signals.momentum_surge import MomentumSurgeStrategy
+from src.bot.signals.orb import OpeningRangeBreakout
 from src.bot.state.persistence import BotState
 from src.bot.state.trade_ledger import TradeLedger
 from src.bot.stream_handler import StreamHandler
-from src.core.regime_detector import RegimeDetector
-from src.core.tastytrade_client import TastytradeClient
+from src.core.schwab_client import SchwabClient
+from src.core.schwab_stream import SchwabStreamClient
 from src.core.order_executor import OrderExecutor
 from src.core.position_manager import PositionManager
-from src.core.tastytrade_ws import TastytradeWSClient
 from src.risk.portfolio_limits import PortfolioLimits
 from src.risk.position_sizer import PositionSizer
 
@@ -50,7 +44,7 @@ class TradingBot:
     """
     Momentum day trading bot controller.
 
-    Strategy: Ross Cameron-style momentum pullback on low-float stocks.
+    Strategy: Opening Range Breakout (ORB) on low-float stocks.
     Flow: Scanner -> Signal -> Risk Check -> Execute -> Monitor -> Exit
     Goal: One high-quality trade per day, 10% account growth.
     """
@@ -64,15 +58,27 @@ class TradingBot:
         """
         self.config = config or get_bot_config()
 
-        # Core components
-        self.client = TastytradeClient()
+        # Schwab broker
+        self.client = SchwabClient(
+            app_key=self.config.schwab_app_key,
+            app_secret=self.config.schwab_app_secret,
+            callback_url=self.config.schwab_oauth_redirect_uri,
+            token_path=self.config.schwab_token_path,
+            pinned_account_hash=self.config.schwab_account_hash,
+        )
+
         self.trade_ledger = TradeLedger(
             path="state/trades.json",
             starting_capital=400.0,
             goal=4000.0,
         )
         self.position_manager = PositionManager(trade_ledger=self.trade_ledger)
-        self.order_executor = OrderExecutor(self.client)
+
+        # Order executor with dry-run mode
+        self.order_executor = OrderExecutor(
+            client=self.client,
+            trading_mode=self.config.trading_mode,
+        )
 
         # Risk components
         self.position_sizer = PositionSizer(
@@ -85,54 +91,25 @@ class TradingBot:
             max_daily_trades=self.config.max_daily_trades,
         )
 
-        # Float data provider
-        self.float_provider = FloatDataProvider(
-            fmp_api_key=self.config.fmp_api_key,
-        )
+        # Float data provider (FMP key removed in Schwab migration; provider
+        # handles None gracefully and skips the FMP fetch path).
+        self.float_provider = FloatDataProvider(fmp_api_key=None)
 
         # TradingView screener (primary scanner, no API key required)
         self.tv_screener = TradingViewScreener() if self.config.use_tradingview_screener else None
 
-        # Momentum scanner (TradingView primary)
+        # Momentum scanner. Catalyst-news enrichment was dropped with the
+        # tastytrade -> Schwab migration (Schwab has no news endpoint).
         self.momentum_scanner = MomentumScreener(
             float_provider=self.float_provider,
             client=self.client,
-            news_enabled=self.config.scanner_enable_news_check,
-            news_lookback_hours=self.config.scanner_news_lookback_hours,
-            news_max_articles=self.config.scanner_news_max_articles,
+            news_enabled=False,
             tv_screener=self.tv_screener,
             use_tradingview=self.config.use_tradingview_screener,
         )
 
-        # Press release scanner (pre-market catalyst detection)
-        self.press_release_scanner = PressReleaseScanner(
-            fmp_api_key=self.config.fmp_api_key,
-            lookback_hours=self.config.press_release_lookback_hours,
-            trading_client=self.client,
-        )
-
-        # HMM regime detector (market-level gate)
-        self.regime_detector = RegimeDetector(
-            symbol=self.config.regime_symbol,
-            n_states=self.config.regime_hmm_states,
-            history_days=self.config.regime_history_days,
-        )
-
-        # Strategies
-        self.strategy = MomentumPullbackStrategy(
-            atr_period=self.config.atr_period,
-            atr_stop_multiplier=self.config.stock_atr_stop_multiplier,
-            pullback_min_candles=self.config.pullback_min_candles,
-            pullback_max_candles=self.config.pullback_max_candles,
-            pullback_max_retracement=self.config.pullback_max_retracement,
-            risk_reward_target=self.config.risk_reward_target,
-            min_signal_strength=self.config.min_signal_strength,
-        )
-        self.surge_strategy = MomentumSurgeStrategy(
-            atr_period=self.config.atr_period,
-            risk_reward_target=self.config.risk_reward_target,
-            min_signal_strength=self.config.min_signal_strength,
-        )
+        # ORB strategy
+        self.strategy = OpeningRangeBreakout(target_r=self.config.risk_reward_target)
 
         # State
         self.bot_state = BotState(self.config.bot_state_file)
@@ -142,7 +119,6 @@ class TradingBot:
             config=self.config,
             position_sizer=self.position_sizer,
             portfolio_limits=self.portfolio_limits,
-            regime_detector=self.regime_detector,
         )
         self.executor = TradeExecutor(
             order_executor=self.order_executor,
@@ -151,23 +127,16 @@ class TradingBot:
         self.monitor = PositionMonitor(
             client=self.client,
             position_manager=self.position_manager,
-            strategies={
-                "momentum_pullback": self.strategy,
-                "momentum_surge": self.surge_strategy,
-            },
+            strategies={"orb": self.strategy},
             trade_executor=self.executor,
         )
 
-        # WebSocket client (DXLink via tastytrade SDK)
-        self.ws_client = TastytradeWSClient(
-            tastytrade_client=self.client,
-            reconnect_max_seconds=self.config.ws_reconnect_max_seconds,
-            heartbeat_seconds=self.config.ws_heartbeat_seconds,
-        )
+        # Stream client (Schwab WebSocket)
+        self.ws_client = SchwabStreamClient(schwab_client=self.client)
 
         # Stream handler (event-driven signal engine)
         self.stream_handler = StreamHandler(
-            strategy=self.surge_strategy,
+            strategy=self.strategy,
             processor=self.processor,
             executor=self.executor,
             monitor=self.monitor,
@@ -177,10 +146,7 @@ class TradingBot:
             client=self.client,
             ws_client=self.ws_client,
             config=self.config,
-            strategies={
-                "momentum_pullback": self.strategy,
-                "momentum_surge": self.surge_strategy,
-            },
+            strategies={"orb": self.strategy},
         )
 
         # Register WebSocket callbacks
@@ -192,9 +158,9 @@ class TradingBot:
         self.scheduler = BotScheduler(self.config)
         self.scheduler.set_callbacks(
             momentum_scan=self._run_momentum_scan,
-            press_release_scan=self._run_press_release_scan,
             end_of_day=self._end_of_day_cleanup,
             daily_reset=self._daily_reset,
+            or_lock=self._lock_opening_ranges,
         )
 
         # Day trading state
@@ -228,14 +194,6 @@ class TradingBot:
         )
         logger.info(f"  Screener: TradingView")
 
-        # 0. Train regime detector (always, for dashboard display)
-        self.regime_detector.refresh()
-        status = self.regime_detector.get_status()
-        if status.get("trained"):
-            logger.info(f"  Regime: {status['label']} ({status['category']}, {status['confidence']:.0%})")
-        else:
-            logger.warning(f"  Regime: failed to train — {status.get('error', 'unknown')}")
-
         # 1. Initial sync with broker (REST, one-time)
         await self._sync_with_broker()
 
@@ -244,18 +202,21 @@ class TradingBot:
         if stale_count:
             logger.info(f"[STARTUP] Cleared {stale_count} stale signals from previous session")
 
+        # 1c. Restore in-day ORB state from disk so an in-day restart keeps
+        # the morning's locks (today's date only; stale files are ignored).
+        self._load_orb_state()
+
         # 2. Initial scan (REST) to get watchlist
         await self._run_momentum_scan()
 
-        # 3. Connect DXLink streams
-        logger.info("[DXLink] Connecting to tastytrade streams...")
+        # 3. Connect Schwab data stream. The account_activity (trade-update)
+        # stream is intentionally not connected: dry_run fabricates fills
+        # locally, and live mode polls get_orders inside OrderExecutor.
+        # Sharing a single stream connection avoids the keepalive races
+        # we hit when two loops were both awaiting handle_message().
+        logger.info("[WS] Connecting to Schwab data stream...")
         data_ok = await self.ws_client.connect_data()
-        trade_ok = await self.ws_client.connect_trades()
-
-        logger.info(
-            f"[DXLink] Connections: data={'OK' if data_ok else 'FAILED'}, "
-            f"trade={'OK' if trade_ok else 'FAILED'}"
-        )
+        logger.info(f"[WS] Data stream: {'OK' if data_ok else 'FAILED'}")
 
         # 4. Subscribe to scanner results + open positions
         scan_symbols = [c.symbol for c in self._scanner_results]
@@ -270,9 +231,9 @@ class TradingBot:
             # Backfill 5-min bar history for stream handler
             for symbol in all_symbols:
                 await self.stream_handler._backfill_bars(symbol)
-            logger.info(f"[DXLink] Subscribed to {len(all_symbols)} symbols: {all_symbols}")
+            logger.info(f"[WS] Subscribed to {len(all_symbols)} symbols: {all_symbols}")
 
-        # 5. Start scheduler (time-specific events only: PR scan, EOD, daily reset)
+        # 5. Start scheduler (time-specific events only: EOD, daily reset)
         # NOTE: Momentum scan uses its own asyncio loop (more reliable than APScheduler cron)
         self.scheduler.start()
         self._running = True
@@ -286,7 +247,6 @@ class TradingBot:
         # NOT asyncio.gather — the SDK's anyio cancel scopes leak CancelledError
         # which would cancel ALL tasks in a gather. Independent tasks are isolated.
         data_task = asyncio.create_task(self._resilient_data_loop())
-        trade_task = asyncio.create_task(self._resilient_trade_loop())
         poll_task = asyncio.create_task(self._position_poll_loop())
         scan_task = asyncio.create_task(self._scan_loop())
 
@@ -294,7 +254,7 @@ class TradingBot:
         await self._shutdown_event.wait()
 
         # Clean shutdown: cancel the background tasks
-        for task in [data_task, trade_task, poll_task, scan_task]:
+        for task in [data_task, poll_task, scan_task]:
             task.cancel()
             try:
                 await task
@@ -302,39 +262,37 @@ class TradingBot:
                 pass
 
     async def _resilient_data_loop(self) -> None:
-        """Run the DXLink data loop with crash recovery.
+        """Pump the Schwab data stream, reconnecting on every disconnect.
 
-        Catches everything including CancelledError from SDK cancel scopes
-        and BaseExceptionGroup from anyio task groups. Restarts automatically.
+        Schwab's WebSocket dies on keepalive timeout periodically; the
+        previous version just slept and tried handle_message on the dead
+        socket forever. Tear down and re-login with exponential backoff.
         """
+        backoff = 5
         while not self._shutdown_event.is_set():
             try:
-                logger.debug("[DXLink] Entering data loop...")
+                logger.debug("[STREAM] Entering data loop...")
                 await self.ws_client.run_data_loop()
-                logger.warning("[DXLink] Data loop exited normally")
+                logger.warning("[STREAM] Data loop exited normally")
             except BaseException as e:
                 if self._shutdown_event.is_set():
                     break
                 logger.error(
-                    f"[DXLink] Data loop crashed ({type(e).__name__}: {e}), "
-                    f"restarting in 10s..."
+                    f"[STREAM] Data loop crashed ({type(e).__name__}: {e}), "
+                    f"reconnecting in {backoff}s..."
                 )
-                self.ws_client._force_reset_streamer()
-                await asyncio.sleep(10)
-
-    async def _resilient_trade_loop(self) -> None:
-        """Run the order polling loop with crash recovery."""
-        while not self._shutdown_event.is_set():
-            try:
-                await self.ws_client.run_trade_loop()
-            except BaseException as e:
-                if self._shutdown_event.is_set():
-                    break
-                logger.error(
-                    f"[DXLink] Trade loop crashed ({type(e).__name__}: {e}), "
-                    f"restarting in 10s..."
-                )
-                await asyncio.sleep(10)
+                await asyncio.sleep(backoff)
+                try:
+                    ok = await self.ws_client.reconnect_data()
+                    if ok:
+                        logger.info("[STREAM] Reconnected successfully")
+                        backoff = 5
+                    else:
+                        logger.error("[STREAM] Reconnect returned False")
+                        backoff = min(backoff * 2, 60)
+                except Exception as recon_err:
+                    logger.error(f"[STREAM] Reconnect raised: {recon_err}")
+                    backoff = min(backoff * 2, 60)
 
     async def _scan_loop(self) -> None:
         """
@@ -393,6 +351,41 @@ class TradingBot:
                 positions = self.position_manager.get_open_positions()
                 if not positions:
                     continue
+
+                # Self-heal: drop any in-memory positions Schwab no longer
+                # holds. The executor's _wait_for_fill historically
+                # mis-reported a real fill as "failed", leaving the bot
+                # in a state where it kept retrying the exit every 30s.
+                # Reconciling here means a stale position falls off on
+                # the next poll cycle even if individual exit attempts
+                # keep racing the order-status API.
+                try:
+                    broker_symbols = {
+                        p["symbol"] for p in self.client.get_positions()
+                        if float(p.get("qty", 0)) > 0
+                    }
+                    stale = [p for p in positions if p.symbol not in broker_symbols]
+                    if stale:
+                        for sp in stale:
+                            try:
+                                exit_px = self.client.get_latest_price(sp.symbol)
+                            except Exception:
+                                exit_px = sp.current_price or sp.entry_price
+                            self.position_manager.close_position(
+                                sp.symbol, exit_px, "reconciled (broker closed)"
+                            )
+                            logger.info(
+                                f"[POLL RECONCILE] {sp.symbol}: broker no longer "
+                                f"holds this position; closed in PositionManager "
+                                f"at ${exit_px:.2f}"
+                            )
+                        positions = self.position_manager.get_open_positions()
+                        if not positions:
+                            continue
+                except Exception as recon_err:
+                    logger.warning(
+                        f"[POLL RECONCILE] reconciliation check failed: {recon_err}"
+                    )
 
                 for position in positions:
                     symbol = position.symbol
@@ -474,42 +467,6 @@ class TradingBot:
         """Request bot shutdown (called from signal handler)."""
         asyncio.create_task(self.stop())
 
-    # -- Pre-Market: Press Release Scanning --------------------------------
-
-    async def _run_press_release_scan(self) -> None:
-        """
-        Scan RSS feeds + FMP for overnight press releases with catalysts.
-
-        Runs every 5 min from 4:00-7:00 AM ET (before momentum scanner).
-        Builds a catalyst watchlist that gets merged with scanner results.
-        """
-        if not self._running:
-            return
-
-        if not self.config.enable_press_release_scanner:
-            return
-
-        try:
-            new_hits = self.press_release_scanner.scan()
-
-            if new_hits:
-                status = self.press_release_scanner.get_status()
-                logger.info(
-                    f"[PR-SCAN] Status: {status['total_hits']} total hits, "
-                    f"{status['positive_hits']} positive, "
-                    f"{len(status['positive_symbols'])} unique symbols"
-                )
-
-                # Log positive catalyst symbols for the upcoming trading session
-                positive_symbols = status["positive_symbols"]
-                if positive_symbols:
-                    logger.info(
-                        f"[PR-SCAN] Catalyst watchlist: {positive_symbols}"
-                    )
-
-        except Exception as e:
-            logger.error(f"[PR-SCAN] Press release scan error: {e}")
-
     # -- Core: Momentum Scan + Signal Generation --------------------------
 
     async def _run_momentum_scan(self) -> None:
@@ -581,23 +538,6 @@ class TradingBot:
 
         self._scanner_results = candidates
 
-        # Enrich candidates with press release catalyst data
-        if self.config.enable_press_release_scanner:
-            for candidate in candidates:
-                pr_hits = self.press_release_scanner.get_hits_for_symbol(candidate.symbol)
-                if pr_hits:
-                    # Use press release data to enrich the candidate
-                    best_hit = pr_hits[0]  # Most recent
-                    if not candidate.has_catalyst:
-                        candidate.has_catalyst = True
-                        candidate.news_headline = best_hit.headline
-                        candidate.news_url = best_hit.url
-                        candidate.news_source = f"{best_hit.source} (PR)"
-                        candidate.news_count = len(pr_hits)
-                    else:
-                        # Already has news — add PR count
-                        candidate.news_count += len(pr_hits)
-
         if not candidates:
             logger.info("[SCAN] No candidates found")
             return
@@ -611,9 +551,27 @@ class TradingBot:
                 f"relVol={c.relative_volume:.1f}x{float_str}{news_str}"
             )
 
-        # Update WebSocket subscriptions with new candidates
         candidate_symbols = [c.symbol for c in candidates]
-        await self.stream_handler.update_watchlist(candidate_symbols)
+
+        # Register watchlist with the ORB strategy so the dashboard reflects
+        # them between 9:25 and 9:45:30 ET. lock_or auto-registers too, but
+        # explicit register makes the watchlist visible pre-lock.
+        for symbol in candidate_symbols:
+            self.strategy.register(symbol)
+
+        # Persist ORB state so an in-day restart keeps the morning's locks.
+        self._save_orb_state()
+
+        # Stream subscriptions must be the UNION of current scanner candidates,
+        # every symbol the ORB strategy is tracking (which includes the 09:45:30
+        # locked symbols), and open positions. The previous code only sent
+        # candidate_symbols, which silently unsubscribed locked ORB symbols
+        # as the scanner refreshed -- so DAIC could go above its OR high
+        # without the bot ever seeing the bar that crossed it.
+        locked_orb_symbols = list(self.strategy.state.keys())
+        pos_symbols = [p.symbol for p in self.position_manager.get_open_positions()]
+        watchlist = sorted(set(candidate_symbols + locked_orb_symbols + pos_symbols))
+        await self.stream_handler.update_watchlist(watchlist)
 
         # For each candidate, try to generate a signal
         for candidate in candidates:
@@ -685,8 +643,7 @@ class TradingBot:
 
             current_price = self.client.get_latest_price(symbol)
 
-            # Surge strategy only (pullback disabled — negative intraday expectancy)
-            return self.surge_strategy.generate(
+            return self.strategy.generate(
                 symbol, bars, current_price, has_catalyst=has_catalyst,
                 symbol_trade_count=self._symbol_trade_counts.get(symbol, 0),
             )
@@ -825,19 +782,178 @@ class TradingBot:
         # Reset stream handler daily counters
         self.stream_handler.reset_daily()
 
-        # Reset press release scanner
-        self.press_release_scanner.reset_daily()
+        # Reset ORB strategy state for the new day, including the on-disk
+        # snapshot so a daily reset can't be undone by a stale state file.
+        self.strategy.reset()
+        self._clear_orb_state()
 
         # Reset portfolio limits daily counters
         self.portfolio_limits.reset_daily_limits()
-
-        # Refresh regime detector with latest daily bars (always, for dashboard)
-        self.regime_detector.refresh()
 
         # Sync fresh state from broker
         await self._sync_with_broker()
 
         logger.info("[RESET] Daily reset complete. Ready for pre-market scanning.")
+
+    # -- Opening Range Lock -----------------------------------------------
+
+    async def _lock_opening_ranges(self) -> None:
+        """Fetch the 9:30-9:45 ET window for each watchlist symbol and lock OR.
+
+        Filter explicitly by timestamp instead of using limit=N so the job
+        works even if it fires late (e.g., scheduler retry after a restart).
+        """
+        if not self._running:
+            return
+        symbols = [c.symbol for c in self._scanner_results]
+        symbols = list({s for s in symbols if s})
+        if not symbols:
+            logger.info("[OR-LOCK] No symbols on watchlist; skipping.")
+            return
+
+        import pytz
+        _ET = pytz.timezone("America/New_York")
+        today_et = datetime.now(_ET).date()
+        or_start = _ET.localize(
+            datetime.combine(today_et, dtime(9, 30))
+        ).astimezone(timezone.utc)
+        or_end = _ET.localize(
+            datetime.combine(today_et, dtime(9, 45))
+        ).astimezone(timezone.utc)
+
+        # Schwab's pricehistory without explicit dates returns only the
+        # most recent ~20 5-min bars (~95 min). Pass an explicit start/end
+        # so this method works even when fired several hours after 09:45
+        # (e.g., via the admin endpoint after a midday auth recovery).
+        import pandas as pd
+        for symbol in symbols:
+            try:
+                resp = self.client._client.get_price_history_every_five_minutes(
+                    symbol,
+                    start_datetime=or_start.astimezone(_ET).replace(tzinfo=None),
+                    end_datetime=(or_end + pd.Timedelta(minutes=10))
+                        .astimezone(_ET).replace(tzinfo=None),
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"[OR-LOCK] {symbol}: pricehistory HTTP {resp.status_code}"
+                    )
+                    continue
+                candles = resp.json().get("candles", [])
+                if not candles:
+                    logger.warning(f"[OR-LOCK] {symbol}: no bars returned")
+                    continue
+                bars = pd.DataFrame(candles)
+                bars["timestamp"] = pd.to_datetime(bars["datetime"], unit="ms", utc=True)
+                bars = bars.set_index("timestamp")[["open", "high", "low", "close", "volume"]]
+                or_bars = bars[(bars.index >= or_start) & (bars.index < or_end)]
+                if or_bars.empty:
+                    logger.warning(
+                        f"[OR-LOCK] {symbol}: no bars in OR window "
+                        f"{or_start.isoformat()} -> {or_end.isoformat()}"
+                    )
+                    continue
+                self.strategy.lock_or(symbol, or_bars)
+                st = self.strategy.state[symbol]
+                logger.info(
+                    f"[OR-LOCK] {symbol}: H=${st.or_high:.2f} L=${st.or_low:.2f} "
+                    f"V={st.or_volume:,} (bars={len(or_bars)})"
+                )
+            except Exception as e:
+                logger.error(f"[OR-LOCK] {symbol} failed: {e}")
+
+        # Persist the freshly locked ORB state so a restart preserves it,
+        # and write an immutable per-day snapshot for backtests/audit.
+        self._save_orb_state()
+        self._save_orb_history()
+
+    # -- ORB state persistence --------------------------------------------
+
+    def _orb_state_path(self) -> "Path":
+        from pathlib import Path
+        return Path(self.config.state_dir) / "orb_state.json"
+
+    def _save_orb_state(self) -> None:
+        """Write current ORB strategy state to disk so an in-day restart
+        keeps the morning's locks. Atomic: tempfile + os.replace."""
+        try:
+            import os, json, tempfile, pytz
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            path = self._orb_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"date": today, "state": self.strategy.to_dict()}
+            fd, tmp = tempfile.mkstemp(
+                prefix=".orb_state.", dir=str(path.parent), text=True
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(payload, f)
+                os.replace(tmp, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
+        except Exception as e:
+            logger.warning(f"[ORB] save state failed: {e}")
+
+    def _load_orb_state(self) -> bool:
+        """Restore ORB strategy state from disk if the file is from today."""
+        path = self._orb_state_path()
+        if not path.exists():
+            return False
+        try:
+            import json, pytz
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            with open(path) as f:
+                data = json.load(f)
+            file_date = data.get("date")
+            if file_date != today:
+                logger.info(
+                    f"[ORB] state file is from {file_date}, today is {today}; "
+                    f"ignoring (will be cleared on daily reset)"
+                )
+                return False
+            self.strategy.load_state(data.get("state", {}))
+            n = len(self.strategy.state)
+            locked = sum(1 for st in self.strategy.state.values() if st.or_locked)
+            logger.info(f"[ORB] restored state from disk: {n} symbols ({locked} locked)")
+            return True
+        except Exception as e:
+            logger.warning(f"[ORB] load state failed: {e}")
+            return False
+
+    def _clear_orb_state(self) -> None:
+        try:
+            self._orb_state_path().unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"[ORB] clear state failed: {e}")
+
+    def _save_orb_history(self) -> None:
+        """Write an immutable per-day snapshot of the locked ORB state.
+
+        Backtests read these to reproduce real scanner picks day-by-day
+        rather than re-running today's picks against historical bars.
+        Files live at state/orb_history/YYYY-MM-DD.json.
+        """
+        try:
+            import os, json, pytz
+            from pathlib import Path
+            ET = pytz.timezone("America/New_York")
+            today = datetime.now(ET).date().isoformat()
+            hist_dir = Path(self.config.state_dir) / "orb_history"
+            hist_dir.mkdir(parents=True, exist_ok=True)
+            path = hist_dir / f"{today}.json"
+            payload = {"date": today, "state": self.strategy.to_dict()}
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+            n = len(payload["state"])
+            logger.info(f"[ORB] wrote history snapshot {path.name} ({n} symbols)")
+        except Exception as e:
+            logger.warning(f"[ORB] save history failed: {e}")
 
     # -- Broker Sync ------------------------------------------------------
 
@@ -1016,7 +1132,6 @@ class TradingBot:
             },
             "websocket": self.ws_client.get_status(),
             "stream": self.stream_handler.get_status(),
-            "press_releases": self.press_release_scanner.get_status(),
             "scanner_results": [
                 {
                     "symbol": c.symbol,
@@ -1029,7 +1144,6 @@ class TradingBot:
                 for c in self._scanner_results[:10]
             ],
             "positions": self.monitor.get_positions_summary(),
-            "regime": self.regime_detector.get_status(),
             "state": self.bot_state.get_state_summary(),
             "jobs": self.scheduler.get_jobs(),
         }
