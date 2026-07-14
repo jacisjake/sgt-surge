@@ -47,7 +47,7 @@ _DASHBOARD_HTML = """\
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>sgt-schwab - ORB</title>
+  <title>sgt-schwab — breakout_52w (live)</title>
   <style>
     body { font-family: ui-monospace, monospace; background: #0e1117; color: #c9d1d9; margin: 0; padding: 24px; }
     h1 { font-size: 18px; margin: 0 0 16px; }
@@ -79,11 +79,12 @@ _DASHBOARD_HTML = """\
   </style>
 </head>
 <body>
-  <h1>sgt-schwab - ORB (Opening Range Breakout)</h1>
+  <h1>sgt-schwab — breakout_52w <span class="ok">(live)</span> · ORB <span style="color:#6e7681">(idle)</span></h1>
 
   <div class="panel">
     <strong>Auth:</strong> <span id="auth"></span>
     <span style="margin-left: 16px;"><strong>Mode:</strong> <span id="mode"></span></span>
+    <span style="margin-left: 16px;"><strong>Token:</strong> <span id="token">—</span></span>
     <button id="oauth-btn" style="margin-left: 16px; display:none">Authorize Schwab</button>
   </div>
 
@@ -93,7 +94,7 @@ _DASHBOARD_HTML = """\
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">ORB state</h2>
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">ORB state <span style="font-weight:normal;color:#6e7681">(idle — retired in favor of breakout_52w)</span></h2>
     <table id="orb-table"><thead><tr>
       <th>Symbol</th><th>OR High</th><th>OR Low</th><th>OR Vol</th><th>Locked</th><th>Fired</th><th>Price</th>
     </tr></thead><tbody></tbody></table>
@@ -103,6 +104,14 @@ _DASHBOARD_HTML = """\
     <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Positions</h2>
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Open orders
+      <span style="font-weight:normal;color:#6e7681">&mdash; live breakout_52w (fractional). Market orders queue as pending until the open.</span></h2>
+    <table id="orders-table"><thead><tr>
+      <th>Symbol</th><th>Qty</th><th>Type</th><th>Status</th><th>Filled</th><th>Submitted</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -358,6 +367,20 @@ async function refresh() {
       authOk ? 'none' : 'inline-block';
 
   setText('mode', status.mode || '-');
+
+  // Refresh-token expiry — the thing that used to die silently every 7 days.
+  const tk = status.token;
+  if (tk && tk.expires_at) {
+    if (tk.expired) {
+      setText('token', 'EXPIRED — re-auth', 'err');
+    } else {
+      const d = tk.days_remaining;
+      setText('token', 'expires in ' + d.toFixed(1) + 'd', d <= 2 ? 'warn' : 'ok');
+    }
+  } else {
+    setText('token', '—');
+  }
+
   if (status.account) {
     setText('account',
       'Equity: $' + status.account.equity.toFixed(2)
@@ -400,6 +423,24 @@ async function refresh() {
     ];
   });
   renderTable('#pos-table tbody', posRows);
+
+  const orders = await (await fetch('/sgt/api/orders')).json();
+  const ordRows = orders.map(function (o) {
+    const s = (o.status || '').toLowerCase();
+    const cls = s === 'filled' ? 'ok'
+              : (s.indexOf('reject') >= 0 || s.indexOf('cancel') >= 0 || s.indexOf('expired') >= 0) ? 'err'
+              : 'warn';
+    return [
+      {text: o.symbol},
+      {text: String(o.qty)},
+      {text: o.type || '-'},
+      {text: o.status || '-', cls: cls},
+      {text: String(o.filled_qty || 0)},
+      {text: (o.submitted_at || '').replace('T', ' ').slice(0, 16)},
+    ];
+  });
+  renderTable('#orders-table tbody',
+    ordRows.length ? ordRows : [[{text: 'No open orders', cls: ''}, {text: ''}, {text: ''}, {text: ''}, {text: ''}, {text: ''}]]);
 
   const paper = await (await fetch('/sgt/api/paper')).json();
   if (paper.exists) {
@@ -599,6 +640,18 @@ async def status() -> dict:
         "trading_mode": str(_bot.config.trading_mode.value),
         "token": _token_block(),
     }
+
+
+@app.get("/api/orders")
+async def open_orders() -> list:
+    """Open/pending broker orders — surfaces live breakout_52w fractional orders
+    that are queued (pending_activation) and not yet in Positions."""
+    if _bot is None or not _bot.client.is_authenticated:
+        return []
+    try:
+        return _bot.client.get_orders(status="open")
+    except Exception:  # noqa: BLE001 — the dashboard must never 500 over this
+        return []
 
 
 @app.get("/api/orb")

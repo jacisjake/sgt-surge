@@ -47,6 +47,27 @@ def test_orb_state(bot_app):
     assert payload["AAPL"]["or_locked"] is True
 
 
+def test_open_orders_returns_broker_orders(bot_app):
+    client, bot = bot_app
+    bot.client.get_orders.return_value = [
+        {"id": "1007178842794", "symbol": "GS", "qty": 0.0218, "filled_qty": 0.0,
+         "type": "market", "status": "pending_activation", "submitted_at": "2026-07-14T23:31:12+0000"},
+    ]
+    r = client.get("/api/orders")
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["symbol"] == "GS"
+    assert body[0]["qty"] == 0.0218
+    assert body[0]["status"] == "pending_activation"
+
+
+def test_open_orders_empty_when_unauthenticated():
+    bot = MagicMock()
+    bot.client.is_authenticated = False
+    web.set_bot(bot)
+    assert TestClient(web.app).get("/api/orders").json() == []
+
+
 def test_status_returns_account_when_authenticated(bot_app):
     client, _ = bot_app
     r = client.get("/api/status")
