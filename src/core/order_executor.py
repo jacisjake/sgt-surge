@@ -88,6 +88,8 @@ class OrderExecutor:
         if trading_mode is None:
             trading_mode = TradingMode.LIVE
         self.trading_mode = trading_mode
+        # Send fractional quantities to the API (unproven support — off by default).
+        self.allow_fractional = False
 
     def execute_market_order(
         self,
@@ -275,16 +277,26 @@ class OrderExecutor:
         stop_price: Optional[float] = None,
         extended_hours: bool = False,
     ) -> str:
-        """Submit order to Schwab based on type. Returns order_id string."""
-        # Round to whole shares (Schwab does not support fractional equity orders)
+        """Submit order to Schwab based on type. Returns order_id string.
+
+        Quantity handling depends on `allow_fractional` (default False):
+          - False: round DOWN to whole shares, reject < 1 (Schwab's documented
+            behavior; keeps existing large-account trading unchanged).
+          - True: round to 4 decimals, reject only <= 0. Lets a fractional order
+            reach the API so fractional support can be tested empirically. Whether
+            Schwab actually accepts it is unproven and settled by a real order.
+        """
         original_qty = qty
-        qty = int(qty)
-        if qty < 1:
-            raise ValueError(f"Cannot buy less than 1 share of {symbol}")
+        if getattr(self, "allow_fractional", False):
+            qty = round(float(qty), 4)
+            if qty <= 0:
+                raise ValueError(f"Cannot buy 0 shares of {symbol}")
+        else:
+            qty = int(qty)
+            if qty < 1:
+                raise ValueError(f"Cannot buy less than 1 share of {symbol}")
         if qty != original_qty:
-            logger.info(
-                f"Rounded {symbol} qty from {original_qty:.6f} to {qty} (whole shares only)"
-            )
+            logger.info(f"Adjusted {symbol} qty {original_qty:.6f} -> {qty}")
 
         if order_type == "market":
             return self.client.submit_market_order(symbol, qty, side)

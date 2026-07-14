@@ -38,6 +38,18 @@ except ImportError:  # pragma: no cover — surfaced at install time
     _OrderBuilder = _Duration = _Session = _OrderType = _EquityInstruction = None
 
 
+def _order_qty(qty: float):
+    """Normalize an order quantity for the Schwab order builders.
+
+    A whole number is sent as int (unchanged behavior for share-based orders); a
+    fractional quantity is sent as float so it can reach the API. Whether Schwab
+    accepts fractional is unproven — this just stops the client from silently
+    truncating it to int before it ever gets there.
+    """
+    q = float(qty)
+    return int(q) if q == int(q) else q
+
+
 def _avg_fill_price(order: dict) -> Optional[float]:
     """Volume-weighted average fill price across an order's execution legs.
 
@@ -287,10 +299,11 @@ class SchwabClient:
     def submit_market_order(self, symbol: str, qty: float, side: str) -> str:
         if not self.is_authenticated:
             raise RuntimeError("SchwabClient not authenticated")
+        q = _order_qty(qty)
         builder = (
-            equity_buy_market(symbol, int(qty))
+            equity_buy_market(symbol, q)
             if side.lower() == "buy"
-            else equity_sell_market(symbol, int(qty))
+            else equity_sell_market(symbol, q)
         )
         resp = self._client.place_order(self._account_hash, builder)
         if resp.status_code not in (200, 201):
@@ -302,10 +315,11 @@ class SchwabClient:
     ) -> str:
         if not self.is_authenticated:
             raise RuntimeError("SchwabClient not authenticated")
+        q = _order_qty(qty)
         builder = (
-            equity_buy_limit(symbol, int(qty), limit_price)
+            equity_buy_limit(symbol, q, limit_price)
             if side.lower() == "buy"
-            else equity_sell_limit(symbol, int(qty), limit_price)
+            else equity_sell_limit(symbol, q, limit_price)
         )
         resp = self._client.place_order(self._account_hash, builder)
         if resp.status_code not in (200, 201):
@@ -337,7 +351,7 @@ class SchwabClient:
             .add_equity_leg(
                 instruction=instr,
                 symbol=symbol,
-                quantity=int(qty),
+                quantity=_order_qty(qty),
             )
         )
         resp = self._client.place_order(self._account_hash, builder)
