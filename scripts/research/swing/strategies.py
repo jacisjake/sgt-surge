@@ -7,6 +7,7 @@ slippage.  Slippage is applied as 2 * slip_bps / 10_000 (entry + exit crossing).
 from __future__ import annotations
 
 import datetime
+from typing import Optional
 
 import pandas as pd
 
@@ -428,6 +429,22 @@ def turn_of_month_trades(
     return result
 
 
+def build_risk_on(spy_df: pd.DataFrame, sma_period: int = 200) -> dict:
+    """Causal risk-on map for the market-regime gate: date -> (SPY close > SMA).
+
+    Causal by construction: a rolling mean at row i uses only closes up to i, so
+    the flag for a day never depends on the future. During SMA warmup the mean is
+    NaN, which we deliberately read as risk-OFF — an unknown regime must never be
+    treated as permission to trade.
+    """
+    sma = spy_df["close"].rolling(sma_period).mean().to_numpy()
+    closes = spy_df["close"].to_numpy()
+    return {
+        ts.date(): bool(not pd.isna(sma[i]) and closes[i] > sma[i])
+        for i, ts in enumerate(spy_df.index)
+    }
+
+
 def breakout_52w_trades(
     df: pd.DataFrame,
     symbol: str,
@@ -435,6 +452,7 @@ def breakout_52w_trades(
     ma_exit: int = 50,
     stop_pct: float = 0.08,
     slip_bps: float = 15.0,
+    risk_on: Optional[dict] = None,
 ) -> list[dict]:
     """Momentum breakout: buy the FIRST bar of a new 52-week (lookback-bar) high.
 
@@ -448,6 +466,11 @@ def breakout_52w_trades(
       1. low[j] <= entry*(1-stop_pct) → exit at stop_level (checked FIRST)
       2. close[j] < SMA(close, ma_exit)[j] → trend-break exit at close[j]
     If neither triggers, exit at last close.
+
+    `risk_on` is the optional market-regime gate (see build_risk_on): a
+    date -> bool map; entries on risk-off dates are skipped, and a date missing
+    from the map is treated as risk-off. Pass None (default) to run ungated.
+    Gating ENTRIES only — an open position must always be free to exit.
 
     Returns one dict per trade: {symbol, entry_date, exit_date, return_pct, stop_pct}.
     """
@@ -473,6 +496,10 @@ def breakout_52w_trades(
         window_prev_max = highs[prev_window_start: i - 1].max()
         if closes[i - 1] >= window_prev_max:
             continue  # prior bar was also at a new high — not a fresh breakout
+
+        # Market-regime gate: don't buy breakouts into a downtrending market.
+        if risk_on is not None and not risk_on.get(index[i].date(), False):
+            continue
 
         entry = closes[i]
         stop_level = entry * (1.0 - stop_pct)
