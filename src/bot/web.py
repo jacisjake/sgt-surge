@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.bot.comparison import comparison_stats, trade_returns
+from src.core.schwab_token import read_token_status
 
 try:
     from schwab.auth import client_from_received_url, get_auth_context
@@ -568,19 +569,35 @@ async def auth_status() -> dict:
     }
 
 
+def _token_block() -> dict:
+    """Refresh-token expiry, so the dashboard can warn before the 7-day death."""
+    if _bot is None:
+        return {}
+    try:
+        st = read_token_status(_bot.config.schwab_token_path)
+    except Exception:  # noqa: BLE001 — status must never 500 over this
+        return {}
+    return {
+        "expires_at": st["expires_at"],
+        "days_remaining": st["days_remaining"],
+        "expired": st["expired"],
+    }
+
+
 @app.get("/api/status")
 async def status() -> dict:
     if _bot is None or not _bot.client.is_authenticated:
-        return {"mode": "setup", "authenticated": False}
+        return {"mode": "setup", "authenticated": False, "token": _token_block()}
     try:
         account = _bot.client.get_account()
     except Exception as e:
-        return {"mode": "error", "error": str(e)}
+        return {"mode": "error", "error": str(e), "token": _token_block()}
     return {
         "mode": "running",
         "authenticated": True,
         "account": account,
         "trading_mode": str(_bot.config.trading_mode.value),
+        "token": _token_block(),
     }
 
 

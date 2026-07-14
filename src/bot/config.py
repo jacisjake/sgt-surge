@@ -265,6 +265,30 @@ class BotConfig(Settings):
         description="Directory for state files",
     )
 
+    # ── Alerting (email over SMTP) ──────────────────────────────────────
+    # Schwab refresh tokens die every 7 days and cannot be renewed by API, so
+    # the only defence is being told before/when it happens. Unset = alerts are
+    # skipped (logged), never fatal.
+
+    alert_email_to: str = Field(
+        default="",
+        description="Recipient address for token-expiry and failure alerts",
+    )
+    alert_warn_within_days: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=6.0,
+        description="Warn this many days before the Schwab refresh token expires",
+    )
+    smtp_host: str = Field(default="", description="SMTP server hostname")
+    smtp_port: int = Field(default=587, description="SMTP port (587 = STARTTLS)")
+    smtp_user: str = Field(default="", description="SMTP username")
+    smtp_password: str = Field(default="", description="SMTP password / app password")
+    smtp_from: str = Field(
+        default="",
+        description="From address (defaults to smtp_user when empty)",
+    )
+
     # ── Properties ──────────────────────────────────────────────────────
 
     @property
