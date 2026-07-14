@@ -136,6 +136,31 @@ def execute_plan(plan: list[dict], executor) -> list[dict]:
     return results
 
 
+def order_summary(results: list[dict], today, equity: float) -> tuple[str, str]:
+    """Build the (subject, body) alert email for a live run's orders. Pure.
+
+    Real money moved unattended, so the email always says what the bot did:
+    silence means nothing happened; a rejection is flagged in the subject.
+    """
+    rejected = [r for r in results if r.get("status") == "rejected"]
+    n = len(results)
+    if rejected:
+        subject = f"[sgt-schwab] live_swing: {n} order(s), {len(rejected)} REJECTED"
+    else:
+        subject = f"[sgt-schwab] live_swing placed {n} order(s) — {today}"
+    lines = [f"Live swing run {today} (equity ${equity:.2f}) placed {n} order(s):", ""]
+    for r in results:
+        line = f"  {r['status'].upper():9} {r['action']} {r['qty']:.4f} {r['symbol']}"
+        if r.get("error"):
+            line += f"  ({r['error']})"
+        lines.append(line)
+    if rejected:
+        lines += ["", "One or more orders were REJECTED — if these are fractional "
+                  "rejections, Schwab may not be accepting fractional for these names. "
+                  "Check state/live_swing.log."]
+    return subject, "\n".join(lines)
+
+
 def _fetch(client, symbols, lookback):
     today_wall = dt.date.today()
     start = today_wall - dt.timedelta(days=(lookback + 30) * 2)
@@ -148,17 +173,7 @@ def _fetch(client, symbols, lookback):
     return bars, spy
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--symbols-file", required=True)
-    ap.add_argument("--risk-pct", type=float, default=0.01)
-    ap.add_argument("--lookback", type=int, default=252)
-    ap.add_argument("--ma-exit", type=int, default=50)
-    ap.add_argument("--stop-pct", type=float, default=0.08)
-    ap.add_argument("--live", action="store_true",
-                    help="PLACE REAL ORDERS (default is preview only)")
-    args = ap.parse_args(argv)
-
+def _run(args) -> int:
     from pathlib import Path
     from config.settings import TradingMode
     from src.bot.config import get_bot_config
@@ -213,10 +228,51 @@ def main(argv=None) -> int:
     print("\nPLACING REAL FRACTIONAL ORDERS...")
     ex = OrderExecutor(client, trading_mode=TradingMode.LIVE)
     ex.allow_fractional = True
-    for r in execute_plan(plan, ex):
+    results = execute_plan(plan, ex)
+    for r in results:
         print(f"  {r['status'].upper():9} {r['action']} {r['qty']:.4f} {r['symbol']}"
               + (f"  ({r['error']})" if r.get("error") else ""))
+
+    # Real money moved unattended — always email what happened.
+    if results:
+        from src.bot.alerts import send_email_alert
+        subject, body = order_summary(results, today, equity)
+        send_email_alert(subject, body, cfg)
     return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--symbols-file", required=True)
+    ap.add_argument("--risk-pct", type=float, default=0.01)
+    ap.add_argument("--lookback", type=int, default=252)
+    ap.add_argument("--ma-exit", type=int, default=50)
+    ap.add_argument("--stop-pct", type=float, default=0.08)
+    ap.add_argument("--live", action="store_true",
+                    help="PLACE REAL ORDERS (default is preview only)")
+    args = ap.parse_args(argv)
+
+    try:
+        return _run(args)
+    except Exception as e:  # noqa: BLE001
+        # A crashed --live run must not fail silently: it means the ledger/orders
+        # didn't advance, usually an expired Schwab token. Alert, then re-raise
+        # so cron records the failure too.
+        if args.live:
+            import traceback as _tb
+            try:
+                from src.bot.alerts import send_email_alert
+                from src.bot.config import get_bot_config
+                send_email_alert(
+                    "[sgt-schwab] live_swing RUN FAILED",
+                    f"The live swing run crashed:\n\n{type(e).__name__}: {e}\n\n"
+                    f"{_tb.format_exc()}\n\nLikely an expired Schwab token — "
+                    f"re-auth at https://ut.gitsum.rest. Log: state/live_swing.log",
+                    get_bot_config(),
+                )
+            except Exception:  # noqa: BLE001 — alerting must never mask the real error
+                pass
+        raise
 
 
 if __name__ == "__main__":

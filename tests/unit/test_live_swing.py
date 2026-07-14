@@ -3,7 +3,7 @@ import datetime
 
 import pandas as pd
 
-from scripts.live_swing import plan_orders
+from scripts.live_swing import order_summary, plan_orders
 
 
 def _days(n, start="2024-01-01"):
@@ -85,6 +85,25 @@ def test_exits_run_even_when_risk_off():
     plan = plan_orders(pos, {"BBB": df}, _spy(above=False),
                        equity=200.0, available_cash=0.0, today=datetime.date(2024, 1, 10), **P)
     assert [o for o in plan if o["action"] == "sell"][0]["reason"] == "stop"
+
+
+def test_order_summary_flags_rejection_in_subject():
+    results = [
+        {"action": "buy", "qty": 0.0218, "symbol": "GS", "status": "submitted"},
+        {"action": "buy", "qty": 0.1, "symbol": "AMD", "status": "rejected",
+         "error": "ValueError: fractional not allowed"},
+    ]
+    subject, body = order_summary(results, datetime.date(2026, 7, 15), 198.98)
+    assert "REJECTED" in subject
+    assert "1 REJECTED" in subject
+    assert "GS" in body and "AMD" in body
+
+
+def test_order_summary_clean_when_all_submitted():
+    results = [{"action": "buy", "qty": 0.0218, "symbol": "GS", "status": "submitted"}]
+    subject, body = order_summary(results, datetime.date(2026, 7, 15), 198.98)
+    assert "REJECTED" not in subject
+    assert "placed 1 order" in subject
 
 
 def test_does_not_rebuy_held_symbol():
