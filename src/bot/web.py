@@ -79,7 +79,7 @@ _DASHBOARD_HTML = """\
   </style>
 </head>
 <body>
-  <h1>sgt-schwab — breakout_52w <span class="ok">(live)</span> · ORB <span style="color:#6e7681">(idle)</span></h1>
+  <h1>sgt-schwab — breakout_52w <span class="ok">(live)</span></h1>
 
   <div class="panel">
     <strong>Auth:</strong> <span id="auth"></span>
@@ -94,14 +94,8 @@ _DASHBOARD_HTML = """\
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">ORB state <span style="font-weight:normal;color:#6e7681">(idle — retired in favor of breakout_52w)</span></h2>
-    <table id="orb-table"><thead><tr>
-      <th>Symbol</th><th>OR High</th><th>OR Low</th><th>OR Vol</th><th>Locked</th><th>Fired</th><th>Price</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Positions</h2>
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Live positions
+      <span style="font-weight:normal;color:#6e7681">&mdash; breakout_52w, real account (fractional)</span></h2>
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
@@ -116,16 +110,8 @@ _DASHBOARD_HTML = """\
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Strategy comparison
-      <span style="font-weight:normal;color:#6e7681">&mdash; edge is sizing-normalized (per-trade price return)</span></h2>
-    <table id="compare-table"><thead><tr>
-      <th>Metric</th><th>ORB (live)</th><th>breakout_52w (paper)</th>
-    </tr></thead><tbody></tbody></table>
-    <div id="compare-real" style="margin-top:8px;font-size:12px;color:#8b949e"></div>
-  </div>
-
-  <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Paper Forward &mdash; breakout_52w
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Paper forward &mdash; breakout_52w
+      <span style="font-weight:normal;color:#6e7681">(sim benchmark, same strategy)</span>
       <span id="paper-meta" style="font-weight:normal;color:#8b949e"></span></h2>
     <div id="paper-summary" style="margin-bottom:10px;font-size:13px"></div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
@@ -391,26 +377,6 @@ async function refresh() {
     setText('account', '-');
   }
 
-  const orb = await (await fetch('/sgt/api/orb')).json();
-  const bars = await (await fetch('/sgt/api/bars')).json();
-  const orbRows = Object.entries(orb).map(function (entry) {
-    const sym = entry[0]; const st = entry[1];
-    const b = bars[sym] || {};
-    return {
-      cells: [
-        {text: sym},
-        {text: '$' + st.or_high.toFixed(2)},
-        {text: '$' + st.or_low.toFixed(2)},
-        {text: st.or_volume.toLocaleString()},
-        {text: st.or_locked ? 'YES' : 'no', cls: st.or_locked ? 'ok' : 'warn'},
-        {text: st.breakout_fired ? 'YES' : 'no', cls: st.breakout_fired ? 'ok' : ''},
-        {node: sparkline(b.closes, st.or_high, st.or_low)},
-      ],
-      onClick: function () { openModal(sym); },
-    };
-  });
-  renderTable('#orb-table tbody', orbRows);
-
   const positions = await (await fetch('/sgt/api/positions')).json();
   const posRows = positions.map(function (p) {
     const pnl = p.unrealized_pnl || 0;
@@ -467,28 +433,7 @@ async function refresh() {
     }));
   } else {
     document.getElementById('paper-summary').textContent =
-      'No paper-test data yet (first run 16:30 ET).';
-  }
-
-  const cmp = await (await fetch('/sgt/api/compare')).json();
-  if (cmp.orb && cmp.paper) {
-    const pct = function (x) { return (x * 100).toFixed(1) + '%'; };
-    const signed = function (x) { return {text: pct(x), cls: x >= 0 ? 'ok' : (x < 0 ? 'err' : '')}; };
-    const o = cmp.orb, p = cmp.paper;
-    renderTable('#compare-table tbody', [
-      [{text: 'Closed trades'}, {text: String(o.n_closed)}, {text: String(p.n_closed)}],
-      [{text: 'Win rate'}, {text: pct(o.win_rate)}, {text: pct(p.win_rate)}],
-      [{text: 'Avg win'}, signed(o.avg_win), signed(p.avg_win)],
-      [{text: 'Avg loss'}, signed(o.avg_loss), signed(p.avg_loss)],
-      [{text: 'Expectancy / trade'}, signed(o.expectancy), signed(p.expectancy)],
-      [{text: 'Cum. return (equal-weight)'}, signed(o.norm_return), signed(p.norm_return)],
-    ]);
-    const eq = (o.account_equity != null) ? ('$' + o.account_equity.toFixed(2)) : '—';
-    document.getElementById('compare-real').innerHTML =
-      'Real account (ORB): equity <b>' + eq + '</b> &nbsp;|&nbsp; realized '
-      + '<b class="' + (o.realized_pnl >= 0 ? 'ok' : 'err') + '">$' + o.realized_pnl.toFixed(2) + '</b>'
-      + ' &nbsp;·&nbsp; paper realized <b class="' + (p.realized_pnl >= 0 ? 'ok' : 'err')
-      + '">$' + p.realized_pnl.toFixed(2) + '</b> (sim)';
+      'No paper-test data yet.';
   }
 }
 

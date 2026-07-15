@@ -86,11 +86,14 @@ def test_status_returns_setup_mode_when_unauthenticated():
     assert r.json()["mode"] == "setup"
 
 
-def test_dashboard_html_mentions_orb(bot_app):
+def test_dashboard_html_is_breakout_centric(bot_app):
     client, _ = bot_app
     r = client.get("/")
     assert r.status_code == 200
-    assert "ORB" in r.text or "Opening Range" in r.text
+    # breakout_52w is now the live strategy; the retired ORB table is gone.
+    assert "breakout_52w" in r.text
+    assert "Live positions" in r.text and "Open orders" in r.text
+    assert 'id="orb-table"' not in r.text
 
 
 def test_bars_all_symbols_returns_closes_and_or_band(bot_app):
