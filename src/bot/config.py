@@ -209,6 +209,18 @@ class BotConfig(Settings):
         description="Allow short selling (not used in momentum strategy)",
     )
 
+    # ── Capital safety (ORB live money path) ────────────────────────────
+    # Default False: even if TRADING_MODE=live, TradeExecutor will not
+    # submit real ORB broker orders. dry_run already blocks the broker
+    # in OrderExecutor. Set ENABLE_ORB_LIVE=true only when intentionally
+    # re-enabling ORB live money.
+
+    enable_orb_live: bool = Field(
+        default=False,
+        env="ENABLE_ORB_LIVE",
+        description="Allow real ORB broker order submits when TRADING_MODE=live",
+    )
+
     # ── Day Trading Risk Management ─────────────────────────────────────
 
     max_daily_trades: int = Field(

@@ -60,13 +60,14 @@ cp .env.example .env
 Edit `.env` with your credentials. See the comments in `.env.example` for guidance on each variable.
 
 **Required:**
-- `SCHWAB_CLIENT_ID` -- OAuth client ID from Schwab developer portal
-- `SCHWAB_CLIENT_SECRET` -- OAuth client secret
-- `SCHWAB_ACCOUNT_NUMBER` -- your Schwab account number
-- `TRADING_MODE` -- `paper` for paper trading, `live` for real money
+- `SCHWAB_APP_KEY` -- OAuth app key from Schwab developer portal
+- `SCHWAB_APP_SECRET` -- OAuth app secret
+- `TRADING_MODE` -- `dry_run` (simulated fills) or `live` (real money). No `paper`.
 
 **Optional but recommended:**
+- `ENABLE_ORB_LIVE` -- default `false`; must be `true` **and** `TRADING_MODE=live` for real ORB broker orders
 - `FMP_API_KEY` -- enables float filtering (free tier: 250 requests/day)
+- `SCHWAB_ACCOUNT_HASH` -- pin a specific account hash after first OAuth
 
 ### 3. Set up Charles Schwab OAuth
 
@@ -166,8 +167,21 @@ All configuration is done through environment variables (or `.env` file). See `.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRADING_MODE` | `paper` | `paper` or `live` |
+| `TRADING_MODE` | `dry_run` | `dry_run` (simulated fills) or `live` (real money). No `paper`. |
+| `ENABLE_ORB_LIVE` | `false` | When `false`, ORB path will not place real broker orders even if `TRADING_MODE=live` |
 | `ENABLE_EXTENDED_HOURS` | `true` | Allow extended hours trading |
+
+### Trading Lab cutover (capital safety)
+
+Design: [`docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`](docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md).
+
+Operator checklist for server cutover:
+
+1. Set server `.env` to `TRADING_MODE=dry_run` (leave `ENABLE_ORB_LIVE` false/unset).
+2. Restart only the `sgt-schwab-bot` container.
+3. Verify `/api/status` reports `"trading_mode":"dry_run"`. Healthcheck `"mode":"running"` means authenticated, **not** that ORB is trading live.
+4. Keep Schwab token refresh and the `run_paper_forward.sh` weekday paper cron.
+5. Only set `ENABLE_ORB_LIVE=true` if intentionally re-enabling ORB live money.
 
 ### Risk Management
 

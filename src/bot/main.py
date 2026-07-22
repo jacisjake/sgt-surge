@@ -123,6 +123,7 @@ class TradingBot:
         self.executor = TradeExecutor(
             order_executor=self.order_executor,
             position_manager=self.position_manager,
+            enable_orb_live=self.config.enable_orb_live,
         )
         self.monitor = PositionMonitor(
             client=self.client,
@@ -176,6 +177,7 @@ class TradingBot:
         """Start the trading bot with WebSocket streaming."""
         logger.info("Starting momentum day trading bot (DXLink mode)...")
         logger.info(f"  Mode: {self.config.trading_mode.value}")
+        logger.info(f"  ENABLE_ORB_LIVE: {self.config.enable_orb_live}")
 
         # Check authentication — start dashboard-only mode if not authenticated
         if not self.client.is_authenticated:

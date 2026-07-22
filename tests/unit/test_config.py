@@ -44,3 +44,23 @@ def test_surge_fields_removed():
         "fmp_api_key",
     ):
         assert not hasattr(config, removed), f"{removed} should be deleted"
+
+
+def test_enable_orb_live_defaults_false(monkeypatch):
+    monkeypatch.delenv("ENABLE_ORB_LIVE", raising=False)
+    config = BotConfig()
+    assert config.enable_orb_live is False
+
+
+@pytest.mark.parametrize("value", ["true", "1", "True", "TRUE"])
+def test_enable_orb_live_env_true(monkeypatch, value):
+    monkeypatch.setenv("ENABLE_ORB_LIVE", value)
+    config = BotConfig()
+    assert config.enable_orb_live is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "False"])
+def test_enable_orb_live_env_false(monkeypatch, value):
+    monkeypatch.setenv("ENABLE_ORB_LIVE", value)
+    config = BotConfig()
+    assert config.enable_orb_live is False

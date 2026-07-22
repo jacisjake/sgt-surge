@@ -35,16 +35,27 @@ sudo systemctl reload caddy
   - Stop: OR low. Target: entry + 2R, with progressive R-trailing (breakeven floor at +1R, chandelier overlay above)
   - Max trades/day: cash-account-constrained (no fixed cap)
   - Position sizing: hybrid (~90% BP deploy, capped by risk %)
-- **Trading mode**: `TRADING_MODE=dry_run` (simulated fills) is the default. The **deployed bot runs `live`** (real orders) on a ~$199 cash account.
+- **Trading mode**: `TRADING_MODE` is `dry_run` | `live` only (no `paper`). Default is `dry_run` (simulated fills). Real ORB broker submits also require `ENABLE_ORB_LIVE=true` (default **false**).
 - **Migration design**: see `docs/superpowers/specs/2026-05-08-schwab-migration-design.md`
+- **Trading Lab v1 design**: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
 
-## Strategy Switch — Current State (as of 2026-07-06)
+## Strategy Switch — Current State (as of 2026-07-22)
 
-The active effort is retiring the idle live ORB for a validated edge. Three tracks:
+Active effort: capital safety for idle ORB + Trading Lab v1 cutover. Tracks:
 
-- **ORB** — LIVE and healthy but effectively idle (last real signal 2026-06-04); flat ~$198.98, no positions.
-- **`breakout_52w`** (52-week-high swing momentum) — the validated bake-off winner (+55% backtest), running as a **dry-run paper forward-tester** via `run_paper_forward.sh` (weekday cron on the server). **Currently underwater in forward test (~$191.6 vs $200 start, ≈−4.2%, 8 open positions, last stepped 2026-07-02)** — not yet promoted to live.
-- **`runner_momentum`** (intraday coil-break on small-cap runners) — **spec only** (`docs/superpowers/specs/2026-07-01-runner-momentum-backtest-design.md`); backtest is Sub-project 1 (needs an Alpaca account); nothing implemented.
+- **ORB** — stream/scan may still run; real money path gated by `ENABLE_ORB_LIVE=false` (default) and ops should set server `TRADING_MODE=dry_run`. Last real signal 2026-06-04; account flat ~$199.
+- **`breakout_52w`** (52-week-high swing momentum) — bake-off winner (+55% backtest), **dry-run paper forward-tester** via `run_paper_forward.sh` (weekday cron). Not yet promoted to live.
+- **`runner_momentum`** — **spec only** (`docs/superpowers/specs/2026-07-01-runner-momentum-backtest-design.md`); nothing implemented.
 
 Decision gate: do NOT promote a strategy to live until it proves out in forward test.
 Bake-off findings: `docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
+
+## Lab cutover checklist (server capital safety)
+
+Before/with first Trading Lab deploy on `ut.gitsum.rest`:
+
+1. Set `/opt/sgt-schwab/.env` → `TRADING_MODE=dry_run` (and leave `ENABLE_ORB_LIVE` unset/false).
+2. Restart **only** `sgt-schwab-bot` (never `podman stop -a`).
+3. Verify `curl -s http://localhost:8080/api/status` shows `"trading_mode":"dry_run"`. Note: `"mode":"running"` is **auth-based**, not proof of ORB live trading.
+4. Keep Schwab token refresh (`state/schwab_token.json`) and `run_paper_forward.sh` cron; healthcheck is auth-based until rewritten.
+5. Do **not** set `ENABLE_ORB_LIVE=true` unless intentionally re-enabling ORB live money.

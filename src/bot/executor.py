@@ -43,12 +43,14 @@ class TradeExecutor:
     - Order placement via OrderExecutor
     - Position tracking via PositionManager
     - Error handling and logging
+    - Capital-safety gate: real ORB broker submits only when enable_orb_live
     """
 
     def __init__(
         self,
         order_executor: OrderExecutor,
         position_manager: PositionManager,
+        enable_orb_live: bool = False,
     ):
         """
         Initialize trade executor.
@@ -56,9 +58,12 @@ class TradeExecutor:
         Args:
             order_executor: Order execution handler
             position_manager: Position tracking
+            enable_orb_live: When False, block real broker entries even if
+                TRADING_MODE=live. dry_run already short-circuits in OrderExecutor.
         """
         self.order_executor = order_executor
         self.position_manager = position_manager
+        self.enable_orb_live = enable_orb_live
 
     async def execute_entry(self, trade_params: TradeParams) -> ExecutionResult:
         """
@@ -70,10 +75,31 @@ class TradeExecutor:
         Returns:
             ExecutionResult with order and position info
         """
+        from config.settings import TradingMode
+
         symbol = trade_params.symbol
         timestamp = datetime.now()
 
         try:
+            # Capital safety: refuse real ORB orders unless explicitly enabled.
+            # dry_run already blocks broker in OrderExecutor; this covers live.
+            if (
+                self.order_executor.trading_mode == TradingMode.LIVE
+                and not self.enable_orb_live
+            ):
+                msg = (
+                    f"ORB live orders disabled (ENABLE_ORB_LIVE=false); "
+                    f"blocked entry for {symbol}"
+                )
+                logger.warning(f"[CAPITAL SAFETY] {msg}")
+                return ExecutionResult(
+                    success=False,
+                    order_result=None,
+                    position=None,
+                    error=msg,
+                    timestamp=timestamp,
+                )
+
             # Check if we already have a position
             if self.position_manager.has_position(symbol):
                 return ExecutionResult(
