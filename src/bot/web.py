@@ -47,7 +47,7 @@ _DASHBOARD_HTML = """\
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>sgt-schwab — breakout_52w (live)</title>
+  <title>sgt-schwab — Trading Lab</title>
   <style>
     body { font-family: ui-monospace, monospace; background: #0e1117; color: #c9d1d9; margin: 0; padding: 24px; }
     h1 { font-size: 18px; margin: 0 0 16px; }
@@ -58,10 +58,16 @@ _DASHBOARD_HTML = """\
     .ok { color: #3fb950; }
     .warn { color: #d29922; }
     .err { color: #f85149; }
+    .muted { color: #8b949e; }
     button { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-family: inherit; }
     tr.clickable { cursor: pointer; }
     tr.clickable:hover td { background: #1c2230; }
     .spark { display: block; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+             border: 1px solid #30363d; margin-left: 6px; }
+    .badge.ok { border-color: #238636; color: #3fb950; }
+    .badge.warn { border-color: #9e6a03; color: #d29922; }
+    .badge.err { border-color: #da3633; color: #f85149; }
     /* modal */
     .overlay { position: fixed; inset: 0; background: rgba(1,4,9,0.75); display: none;
                align-items: center; justify-content: center; z-index: 50; }
@@ -79,11 +85,15 @@ _DASHBOARD_HTML = """\
   </style>
 </head>
 <body>
-  <h1>sgt-schwab — breakout_52w <span class="ok">(live)</span></h1>
+  <h1>sgt-schwab — Trading Lab
+    <span id="hdr-trading" class="badge muted">—</span>
+    <span id="hdr-orb" class="badge muted">ORB money —</span>
+  </h1>
 
   <div class="panel">
     <strong>Auth:</strong> <span id="auth"></span>
-    <span style="margin-left: 16px;"><strong>Mode:</strong> <span id="mode"></span></span>
+    <span style="margin-left: 16px;"><strong>Process:</strong> <span id="mode"></span></span>
+    <span style="margin-left: 16px;"><strong>TRADING_MODE:</strong> <span id="trading-mode">—</span></span>
     <span style="margin-left: 16px;"><strong>Token:</strong> <span id="token">—</span></span>
     <button id="oauth-btn" style="margin-left: 16px; display:none">Authorize Schwab</button>
   </div>
@@ -94,8 +104,8 @@ _DASHBOARD_HTML = """\
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Live positions
-      <span style="font-weight:normal;color:#6e7681">&mdash; breakout_52w, real account (fractional)</span></h2>
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Broker positions
+      <span style="font-weight:normal;color:#6e7681">&mdash; real Schwab account (may be flat)</span></h2>
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
@@ -103,17 +113,18 @@ _DASHBOARD_HTML = """\
 
   <div class="panel">
     <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Open orders
-      <span style="font-weight:normal;color:#6e7681">&mdash; live breakout_52w (fractional). Market orders queue as pending until the open.</span></h2>
+      <span style="font-weight:normal;color:#6e7681">&mdash; broker open/pending (market orders may wait for open)</span></h2>
     <table id="orders-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Type</th><th>Status</th><th>Filled</th><th>Submitted</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Paper forward &mdash; breakout_52w
-      <span style="font-weight:normal;color:#6e7681">(sim benchmark, same strategy)</span>
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Lab paper — breakout_52w
+      <span style="font-weight:normal;color:#6e7681">(experiment breakout_52w_paper · SimFill)</span>
       <span id="paper-meta" style="font-weight:normal;color:#8b949e"></span></h2>
-    <div id="paper-summary" style="margin-bottom:10px;font-size:13px"></div>
+    <div id="paper-summary" style="margin-bottom:8px;font-size:13px"></div>
+    <div id="paper-scoreboard" style="margin-bottom:10px;font-size:12px;color:#8b949e"></div>
     <div style="display:flex;gap:24px;flex-wrap:wrap">
       <div style="flex:1;min-width:280px">
         <div style="color:#8b949e;font-size:12px;margin-bottom:4px">Open positions</div>
@@ -354,6 +365,17 @@ async function refresh() {
 
   setText('mode', status.mode || '-');
 
+  // TRADING_MODE + ORB capital-safety badge
+  const tm = status.trading_mode || '—';
+  setText('trading-mode', tm, tm === 'live' ? 'warn' : (tm === 'dry_run' ? 'ok' : ''));
+  const hdrTm = document.getElementById('hdr-trading');
+  hdrTm.textContent = tm;
+  hdrTm.className = 'badge ' + (tm === 'live' ? 'warn' : (tm === 'dry_run' ? 'ok' : 'muted'));
+  const orbLive = !!status.enable_orb_live;
+  const hdrOrb = document.getElementById('hdr-orb');
+  hdrOrb.textContent = orbLive ? 'ORB money ON' : 'ORB money OFF';
+  hdrOrb.className = 'badge ' + (orbLive ? 'err' : 'ok');
+
   // Refresh-token expiry — the thing that used to die silently every 7 days.
   const tk = status.token;
   if (tk && tk.expires_at) {
@@ -418,6 +440,21 @@ async function refresh() {
       + ' &nbsp;|&nbsp; Open ' + paper.n_open
       + ' &nbsp;|&nbsp; Closed ' + paper.n_closed
       + ' (win ' + (paper.win_rate * 100).toFixed(0) + '%)';
+    // Lab scoreboard (north-star is measurement only)
+    const sb = paper.scoreboard || {};
+    const roll = sb.rolling_mean_daily_return;
+    const gap = sb.distance_to_goal;
+    const dd = sb.max_drawdown;
+    let sbLine = 'Scoreboard: maxDD '
+      + (dd == null ? '—' : (dd * 100).toFixed(1) + '%');
+    if (roll != null) {
+      sbLine += ' · rolling daily ' + (roll * 100).toFixed(3) + '%'
+        + ' · gap to 1%/d ' + (gap * 100).toFixed(3) + '%';
+    } else {
+      sbLine += ' · rolling daily n/a (needs equity_curve_daily)';
+    }
+    if (paper.stale) sbLine += ' · <span class="err">LEDGER STALE</span>';
+    document.getElementById('paper-scoreboard').innerHTML = sbLine;
     renderTable('#paper-open tbody', paper.open_positions.map(function (p) {
       return [{text: p.symbol}, {text: p.entry_date},
               {text: '$' + (p.entry_price || 0).toFixed(2)},
@@ -433,7 +470,8 @@ async function refresh() {
     }));
   } else {
     document.getElementById('paper-summary').textContent =
-      'No paper-test data yet.';
+      'No paper ledger yet (breakout_52w_paper).';
+    document.getElementById('paper-scoreboard').textContent = '';
   }
 }
 
@@ -572,17 +610,36 @@ def _token_block() -> dict:
 
 @app.get("/api/status")
 async def status() -> dict:
+    enable_orb = bool(getattr(_bot.config, "enable_orb_live", False)) if _bot else False
+    trading_mode = (
+        str(_bot.config.trading_mode.value)
+        if _bot and getattr(_bot.config, "trading_mode", None) is not None
+        else None
+    )
     if _bot is None or not _bot.client.is_authenticated:
-        return {"mode": "setup", "authenticated": False, "token": _token_block()}
+        return {
+            "mode": "setup",
+            "authenticated": False,
+            "token": _token_block(),
+            "trading_mode": trading_mode,
+            "enable_orb_live": enable_orb,
+        }
     try:
         account = _bot.client.get_account()
     except Exception as e:
-        return {"mode": "error", "error": str(e), "token": _token_block()}
+        return {
+            "mode": "error",
+            "error": str(e),
+            "token": _token_block(),
+            "trading_mode": trading_mode,
+            "enable_orb_live": enable_orb,
+        }
     return {
         "mode": "running",
         "authenticated": True,
         "account": account,
-        "trading_mode": str(_bot.config.trading_mode.value),
+        "trading_mode": trading_mode or str(_bot.config.trading_mode.value),
+        "enable_orb_live": enable_orb,
         "token": _token_block(),
     }
 
@@ -685,8 +742,18 @@ async def paper_forward() -> dict:
     equity = start + realized
     closed = data.get("closed_trades", [])
     wins = [t for t in closed if (t.get("pnl") or 0) > 0]
+    scoreboard = {}
+    stale = False
+    try:
+        from src.lab.metrics.daily_equity import is_ledger_stale, scoreboard as lab_scoreboard
+
+        scoreboard = lab_scoreboard(data)
+        stale, _ = is_ledger_stale(data, max_sessions=3)
+    except Exception:  # noqa: BLE001 — dashboard never 500s over metrics
+        pass
     return {
         "exists": True,
+        "experiment_id": "breakout_52w_paper",
         "equity": equity,
         "starting_equity": start,
         "total_return": (equity / start - 1.0) if start else 0.0,
@@ -697,6 +764,8 @@ async def paper_forward() -> dict:
         "last_date": data.get("last_date"),
         "open_positions": data.get("open_positions", []),
         "closed_trades": list(reversed(closed))[:25],
+        "scoreboard": scoreboard,
+        "stale": stale,
     }
 
 

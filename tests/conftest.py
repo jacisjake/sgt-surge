@@ -1,5 +1,5 @@
 """
-Pytest fixtures for sgt-surge tests.
+Pytest fixtures for sgt-schwab tests.
 """
 
 from datetime import datetime, timedelta

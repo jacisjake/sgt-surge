@@ -1,1 +1,1 @@
-"""Test suite for sgt-surge."""
+"""Test suite for sgt-schwab / Trading Lab."""

@@ -58,8 +58,13 @@ data/*.csv
 /state/
 !/state/.gitkeep
 
-# Claude Code
+# Claude Code / agent scratch
 .claude/
+.superpowers/
+
+# Local UI previews (not product)
+docs/dashboard-preview.html
+docs/dashboard-preview.png
 
 # Pencil design files
 *.pen

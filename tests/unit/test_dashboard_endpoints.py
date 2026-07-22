@@ -18,6 +18,7 @@ def bot_app():
     }
     bot.config.schwab_app_key = "K"
     bot.config.trading_mode.value = "dry_run"
+    bot.config.enable_orb_live = False
     bot.strategy.state = {
         "AAPL": _ORState(or_high=10.5, or_low=9.8, or_volume=6000,
                          or_locked=True, breakout_fired=False),
@@ -75,6 +76,7 @@ def test_status_returns_account_when_authenticated(bot_app):
     body = r.json()
     assert body["account"]["equity"] == 270.0
     assert body["trading_mode"] == "dry_run"
+    assert body["enable_orb_live"] is False
 
 
 def test_status_returns_setup_mode_when_unauthenticated():
@@ -86,14 +88,17 @@ def test_status_returns_setup_mode_when_unauthenticated():
     assert r.json()["mode"] == "setup"
 
 
-def test_dashboard_html_is_breakout_centric(bot_app):
+def test_dashboard_html_is_lab_centric(bot_app):
     client, _ = bot_app
     r = client.get("/")
     assert r.status_code == 200
-    # breakout_52w is now the live strategy; the retired ORB table is gone.
+    # Trading Lab framing; paper experiment + broker panels; no ORB table.
+    assert "Trading Lab" in r.text
     assert "breakout_52w" in r.text
-    assert "Live positions" in r.text and "Open orders" in r.text
+    assert "Broker positions" in r.text and "Open orders" in r.text
+    assert "Lab paper" in r.text or "paper-scoreboard" in r.text
     assert 'id="orb-table"' not in r.text
+    assert "enable_orb_live" in r.text or "ORB money" in r.text
 
 
 def test_bars_all_symbols_returns_closes_and_or_band(bot_app):
@@ -149,6 +154,9 @@ def test_paper_forward_reads_ledger_and_computes_stats(bot_app, tmp_path):
     assert body["win_rate"] == 1.0
     assert body["open_positions"][0]["symbol"] == "TGT"
     assert body["closed_trades"][0]["reason"] == "trend_break"
+    assert body["experiment_id"] == "breakout_52w_paper"
+    assert "scoreboard" in body
+    assert "stale" in body
 
 
 def test_compare_returns_orb_and_paper_edge_metrics(bot_app, tmp_path):
