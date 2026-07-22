@@ -1,3 +1,3 @@
-"""Swing Trader - Algorithmic trading system for tastytrade."""
+"""sgt-schwab — Schwab trading bot + research lab (ORB, swing strategies)."""
 
 __version__ = "0.1.0"

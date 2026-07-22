@@ -49,8 +49,9 @@ def test_run_returns_one_report_per_strategy():
     """run() returns exactly one dict per registered strategy."""
     client = _FakeClient(_make_daily_df(10))
     reports = run(client, ["AAPL"], "2025-01-01", "2025-06-01")
-    # Two strategies: overnight_drift and short_term_reversal
-    assert len(reports) == 2
+    # Default registry: short_term_reversal only (overnight_drift demoted)
+    assert len(reports) == 1
+    assert reports[0]["setup"] == "short_term_reversal"
 
 
 def test_run_reports_have_required_keys():
@@ -64,21 +65,31 @@ def test_run_reports_have_required_keys():
         assert required_keys.issubset(r.keys()), f"Missing keys in {r}"
 
 
-def test_run_overnight_drift_has_trades():
-    """overnight_drift should record len(df)-1 trades per symbol."""
+def test_run_with_custom_strategy_has_trades():
+    """Caller-supplied strategies still accumulate trades (len(df)-1 for overnight)."""
+    from scripts.research.swing.strategies import overnight_drift
+
     n = 10
     client = _FakeClient(_make_daily_df(n))
-    reports = run(client, ["AAPL"], "2025-01-01", "2025-06-01")
+    reports = run(
+        client, ["AAPL"], "2025-01-01", "2025-06-01",
+        strategies={"overnight_drift": overnight_drift},
+    )
     od = next(r for r in reports if r["setup"] == "overnight_drift")
     # 1 symbol × (n-1) trades = 9
     assert od["n"] == n - 1
 
 
-def test_run_with_two_symbols_doubles_overnight_drift_count():
-    """Two symbols doubles the overnight_drift trade count."""
+def test_run_with_two_symbols_doubles_custom_strategy_count():
+    """Two symbols doubles trade count for a caller-supplied strategy."""
+    from scripts.research.swing.strategies import overnight_drift
+
     n = 10
     client = _FakeClient(_make_daily_df(n))
-    reports = run(client, ["AAPL", "MSFT"], "2025-01-01", "2025-06-01")
+    reports = run(
+        client, ["AAPL", "MSFT"], "2025-01-01", "2025-06-01",
+        strategies={"overnight_drift": overnight_drift},
+    )
     od = next(r for r in reports if r["setup"] == "overnight_drift")
     assert od["n"] == 2 * (n - 1)
 
@@ -91,7 +102,7 @@ def test_run_skips_empty_dataframe():
             return pd.DataFrame()
 
     reports = run(_EmptyClient(), ["AAPL"], "2025-01-01", "2025-06-01")
-    assert len(reports) == 2  # still returns two reports
+    assert len(reports) == 1  # one report per registered strategy
     for r in reports:
         assert r["n"] == 0
 

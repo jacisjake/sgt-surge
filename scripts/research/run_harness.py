@@ -22,10 +22,9 @@ from scripts.research.metrics import summarize
 from scripts.research.setups.first_pullback import FirstPullback
 from scripts.research.setups.orb_clean import ORBClean
 from scripts.research.setups.pm_high_break import PMHighBreak
-from scripts.research.setups.sneaky_pivot import SneakyPivot
 from scripts.research.setups.vwap_reclaim import VWAPReclaim
 
-ALL_SETUPS = [ORBClean(), VWAPReclaim(), FirstPullback(), PMHighBreak(), SneakyPivot()]
+ALL_SETUPS = [ORBClean(), VWAPReclaim(), FirstPullback(), PMHighBreak()]
 CACHE_DIR = Path("state/backtest_cache")
 
 

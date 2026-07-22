@@ -14,10 +14,11 @@ from datetime import date
 from pathlib import Path
 
 from scripts.research.metrics import summarize
-from scripts.research.swing.strategies import overnight_drift, short_term_reversal
+from scripts.research.swing.strategies import short_term_reversal
 
+# overnight_drift demoted (bake-off: no edge after costs). Pure fn remains in
+# strategies.py for historical unit tests; not registered as a CLI option.
 SWING_STRATEGIES = {
-    "overnight_drift": overnight_drift,
     "short_term_reversal": short_term_reversal,
 }
 
@@ -107,7 +108,6 @@ def main(argv=None) -> int:
     )
     from functools import partial
     strategies = {
-        "overnight_drift": overnight_drift,
         "short_term_reversal": partial(
             short_term_reversal, down_days=args.down_days, hold=args.hold,
             stop_pct=args.stop_pct, target_pct=args.target_pct, ma=args.ma,

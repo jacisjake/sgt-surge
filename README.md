@@ -308,17 +308,11 @@ pytest tests/unit/ --cov=src
 
 ## Backtesting
 
-Several backtest scripts are included in `scripts/`:
+Legacy ORB research backtest:
 
 ```bash
 # Backtest the live ORB strategy (chandelier stops, daily snapshots)
 python scripts/backtest_orb.py
-
-# Backtest with today's data
-python scripts/backtest_today.py
-
-# Diagnose signal generation
-python scripts/backtest_diagnose.py
 ```
 
 The broader strategy bake-off (structurally different edges, OOS/regime kill-tests,
