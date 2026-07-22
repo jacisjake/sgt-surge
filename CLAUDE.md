@@ -53,6 +53,8 @@ Design: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
   - `python -m scripts.lab.run_experiment --id breakout_52w_paper`
   - `python -m scripts.lab.promote --check|--to paper|live|--demote`
   - `python -m scripts.lab.scoreboard --id breakout_52w_paper`
+  - `python -m scripts.lab.market_brief` / `--narrative` / `--json` (conditions + playbook)
+- **Education:** `config/playbook.yaml` + sensors in `src/lab/education/`; agent prompt `config/prompts/market_education.md`; dashboard **Today's tape** via `/api/education`
 - **Live:** LiveRunner preview default; real submits need stage=live + `TRADING_MODE=live` + `ENABLE_ORB_LIVE=false`
 - **Paper ledger:** `state/experiments/breakout_52w_paper/ledger.json` (auto-migrates from `state/swing_paper_breakout.json`)
 - **Cron:** `run_paper_forward.sh` → lab `run_experiment`; token watch also alerts on ledger staleness (>3 weekdays)

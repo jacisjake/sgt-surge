@@ -33,6 +33,10 @@ Log: /opt/sgt-schwab/state/paper_forward.log" || true
     exit 1
 fi
 
+# Market education brief (conditions + playbook) for dashboard / agent
+podman exec -w /app sgt-schwab-bot \
+    python -m scripts.lab.market_brief 2>/dev/null || true
+
 # Staleness is also checked on token_watch; optional post-run scoreboard line
 podman exec -w /app sgt-schwab-bot \
     python -m scripts.lab.scoreboard --id breakout_52w_paper 2>/dev/null || true

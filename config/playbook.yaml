@@ -1,0 +1,161 @@
+# Hand-authored educational playbook.
+# Maps market condition tags → lessons (A/B/C), anti-lessons, and lab actions.
+# Tags: risk_on | risk_off | chop | elevated_vol
+#
+# linked_experiment: optional id from config/experiments.yaml
+# mode: study | paper | stand_down  (never auto-live)
+
+version: 1
+
+defaults:
+  always_show:
+    - id: capital_safety
+      title: Capital safety first
+      body: >
+        Paper is for learning. Live needs promote gates. ENABLE_ORB_LIVE stays
+        false unless you intentionally re-enable ORB money. 1%/day is a
+        scoreboard north-star, not a promise for every regime.
+
+# Prefer the most specific matching block. Matcher: all listed tags must be present
+# (AND). First match in list order wins for "primary"; all matching blocks are
+# returned as secondary study options.
+modules:
+  - id: risk_off_prep
+    when_tags: [risk_off]
+    title: Risk-off — preserve capital, prepare don't force
+    plays:
+      - letter: A
+        title: Stand down on new momentum breakouts
+        body: >
+          Fresh 52-week highs fail more often when the index is below its long
+          average. Your breakout_52w paper book already gates entries on SPY>SMA —
+          treat that as the lesson, not a bug.
+        mode: stand_down
+        linked_experiment: breakout_52w_paper
+      - letter: B
+        title: Breakout prep list (levels only)
+        body: >
+          Build a watchlist of names near multi-month highs with clean structure.
+          Define invalidation and size *before* risk-on returns. No entries today
+          just because the list is ready.
+        mode: study
+      - letter: C
+        title: Review open risk
+        body: >
+          If you hold multi-name momentum, mark stops and max portfolio heat.
+          Risk-off weeks are for surviving, not averaging up losers.
+        mode: study
+    anti_lessons:
+      - Do not force gapper/ORB-style longs just because the account is flat.
+      - Do not interpret a quiet tape as permission to size up.
+
+  - id: chop_range
+    when_tags: [chop]
+    title: Chop — range plays and fewer breakouts
+    plays:
+      - letter: A
+        title: Expect false breakouts
+        body: >
+          In compressed ranges, 52w and ORB-style breaks often reverse into the
+          range. Prefer waiting for expansion (range ratio rising) before
+          trusting momentum entries.
+        mode: study
+        linked_experiment: breakout_52w_paper
+      - letter: B
+        title: Mean-reversion study (not auto-live)
+        body: >
+          Classic chop toolkit: fade extremes back to VWAP/value, tight risk,
+          quick targets. short_term_reversal is the lab's research candidate —
+          only paper after a backtest report and promote to paper.
+        mode: paper
+        linked_experiment: short_term_reversal_research
+      - letter: C
+        title: Size down or sit
+        body: >
+          Chop destroys expectancy on trend systems. Cutting size or skipping
+          the day is a valid "trade."
+        mode: stand_down
+    anti_lessons:
+      - Do not add risk because "nothing is working" — that's how drawdowns compound.
+      - Do not promote a strategy from a chop sample alone.
+
+  - id: elevated_vol
+    when_tags: [elevated_vol]
+    title: Elevated vol — wider uncertainty
+    plays:
+      - letter: A
+        title: Widen mental stops / fewer names
+        body: >
+          ATR is stretched vs its own history. Same 8% stop covers less structure;
+          consider fewer concurrent ideas and respect gap risk on cash accounts.
+        mode: study
+      - letter: B
+        title: Prefer closes over wicks
+        body: >
+          In high vol, intraday breaks fail more. Educational bias: wait for
+          daily/session close confirmation before treating a breakout as real.
+        mode: study
+        linked_experiment: breakout_52w_paper
+      - letter: C
+        title: Journal gap days
+        body: >
+          Record open-vs-stop fills on paper trades. High-vol weeks teach fill
+          reality (stop_fill_price / gap-through) better than calm weeks.
+        mode: study
+    anti_lessons:
+      - Do not ignore cash T+1 limits when vol spikes — one bad day locks capital.
+
+  - id: risk_on_trend
+    when_tags: [risk_on]
+    title: Risk-on — momentum education
+    plays:
+      - letter: A
+        title: Fresh breakout process (paper)
+        body: >
+          breakout_52w: first close at a new lookback high, hard stop, trail under
+          exit SMA, regime gate on. Run the paper experiment and review open vs
+          closed reasons (stop vs trend_break).
+        mode: paper
+        linked_experiment: breakout_52w_paper
+      - letter: B
+        title: Let winners work
+        body: >
+          Momentum edges pay in a minority of trades. Cutting winners early to
+          "feel safe" is a common educational failure in risk-on tapes.
+        mode: study
+      - letter: C
+        title: Still respect risk %
+        body: >
+          1% risk per idea still applies when the tape is good. Risk-on is not
+          a license to deploy the whole account on one name.
+        mode: study
+        linked_experiment: breakout_52w_paper
+    anti_lessons:
+      - Do not skip the regime gate "just this once" after a winning streak.
+      - Do not promote to live on backtest alone — forward paper is the bar.
+
+  - id: risk_on_chop
+    when_tags: [risk_on, chop]
+    title: Risk-on but choppy — selective aggression
+    plays:
+      - letter: A
+        title: Require expansion
+        body: >
+          Index may be above the long SMA while short-term range is dead. Wait
+          for range expansion before trusting new 52w breaks.
+        mode: study
+        linked_experiment: breakout_52w_paper
+      - letter: B
+        title: One idea at a time
+        body: >
+          Reduce concurrent paper positions until the range ratio improves.
+        mode: stand_down
+      - letter: C
+        title: Review false breaks this week
+        body: >
+          Count paper stops after breakout entries. High false-break rate
+          confirms the chop tag.
+        mode: study
+        linked_experiment: breakout_52w_paper
+    anti_lessons:
+      - Do not treat "SPY is up this year" as permission to ignore short-term chop.

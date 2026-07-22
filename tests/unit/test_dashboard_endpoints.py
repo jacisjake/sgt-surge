@@ -97,8 +97,42 @@ def test_dashboard_html_is_lab_centric(bot_app):
     assert "breakout_52w" in r.text
     assert "Broker positions" in r.text and "Open orders" in r.text
     assert "Lab paper" in r.text or "paper-scoreboard" in r.text
+    assert "Today's tape" in r.text or "edu-plays" in r.text
     assert 'id="orb-table"' not in r.text
     assert "enable_orb_live" in r.text or "ORB money" in r.text
+
+
+def test_education_endpoint_missing_file(bot_app, tmp_path):
+    client, bot = bot_app
+    bot.config.state_dir = str(tmp_path)
+    r = client.get("/api/education")
+    assert r.status_code == 200
+    assert r.json()["exists"] is False
+
+
+def test_education_endpoint_reads_brief(bot_app, tmp_path):
+    client, bot = bot_app
+    bot.config.state_dir = str(tmp_path)
+    d = tmp_path / "lab" / "conditions"
+    d.mkdir(parents=True)
+    (d / "2026-07-22.json").write_text(
+        __import__("json").dumps(
+            {
+                "condition": {
+                    "as_of": "2026-07-22",
+                    "tags": ["risk_off"],
+                    "confidence": "high",
+                    "summary": "Risk-off test.",
+                    "evidence": {},
+                },
+                "education": {"primary": {"id": "risk_off_prep", "title": "Risk-off", "plays": []}},
+                "lab_actions": [],
+            }
+        )
+    )
+    body = client.get("/api/education").json()
+    assert body["exists"] is True
+    assert body["condition"]["tags"] == ["risk_off"]
 
 
 def test_bars_all_symbols_returns_closes_and_or_band(bot_app):

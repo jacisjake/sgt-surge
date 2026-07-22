@@ -104,6 +104,16 @@ _DASHBOARD_HTML = """\
   </div>
 
   <div class="panel">
+    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Today's tape
+      <span style="font-weight:normal;color:#6e7681">&mdash; conditions + study plays (not auto-trades)</span>
+      <span id="edu-meta" style="font-weight:normal;color:#8b949e"></span></h2>
+    <div id="edu-summary" style="margin-bottom:8px;font-size:13px"></div>
+    <div id="edu-tags" style="margin-bottom:8px;font-size:12px"></div>
+    <div id="edu-plays" style="font-size:12px;color:#c9d1d9"></div>
+    <div id="edu-actions" style="margin-top:8px;font-size:11px;color:#8b949e"></div>
+  </div>
+
+  <div class="panel">
     <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Broker positions
       <span style="font-weight:normal;color:#6e7681">&mdash; real Schwab account (may be flat)</span></h2>
     <table id="pos-table"><thead><tr>
@@ -397,6 +407,48 @@ async function refresh() {
       + ' | DT count: ' + status.account.daytrade_count);
   } else {
     setText('account', '-');
+  }
+
+  // Education brief (cached condition + playbook)
+  try {
+    const edu = await (await fetch('/sgt/api/education')).json();
+    if (edu && edu.exists) {
+      const c = edu.condition || {};
+      setText('edu-meta', '· ' + (c.as_of || '') + ' · conf ' + (c.confidence || '—'));
+      document.getElementById('edu-summary').textContent = c.summary || '';
+      const tags = c.tags || [];
+      document.getElementById('edu-tags').innerHTML = tags.map(function (t) {
+        return '<span class="badge ok">' + t + '</span>';
+      }).join(' ');
+      const primary = (edu.education || {}).primary;
+      let playsHtml = '';
+      if (primary) {
+        playsHtml += '<div style="margin-bottom:6px;color:#8b949e">' + (primary.title || '') + '</div>';
+        (primary.plays || []).forEach(function (p) {
+          playsHtml += '<div style="margin-bottom:6px"><b>' + (p.letter || '') + '</b> '
+            + '<span class="muted">[' + (p.mode || 'study') + ']</span> '
+            + (p.title || '') + '<br><span class="muted">'
+            + (p.body || '').slice(0, 220) + ((p.body || '').length > 220 ? '…' : '')
+            + '</span></div>';
+        });
+      } else {
+        playsHtml = '<span class="muted">No playbook module matched — run market_brief after SPY fetch.</span>';
+      }
+      document.getElementById('edu-plays').innerHTML = playsHtml;
+      const acts = edu.lab_actions || [];
+      document.getElementById('edu-actions').textContent = acts.length
+        ? ('Lab: ' + acts.map(function (a) { return a.command; }).join(' · '))
+        : '';
+    } else {
+      setText('edu-meta', '');
+      document.getElementById('edu-summary').textContent =
+        'No condition file yet. Run: python -m scripts.lab.market_brief';
+      document.getElementById('edu-tags').textContent = '';
+      document.getElementById('edu-plays').textContent = '';
+      document.getElementById('edu-actions').textContent = '';
+    }
+  } catch (e) {
+    document.getElementById('edu-summary').textContent = 'Education panel unavailable.';
   }
 
   const positions = await (await fetch('/sgt/api/positions')).json();
@@ -709,6 +761,27 @@ async def bars(symbol: Optional[str] = None) -> dict:
             "current": closes[-1] if closes else None,
         }
     return out
+
+
+@app.get("/api/education")
+async def education_brief() -> dict:
+    """Latest market-condition + playbook education card (read-only).
+
+    Populated by ``python -m scripts.lab.market_brief`` (or paper cron hook).
+    Does not place orders.
+    """
+    state_dir = "state"
+    if _bot is not None and getattr(_bot.config, "state_dir", None):
+        state_dir = _bot.config.state_dir
+    try:
+        from src.lab.education.report import load_condition_report
+
+        report = load_condition_report(state_dir=state_dir)
+        if not report:
+            return {"exists": False}
+        return {"exists": True, **report}
+    except Exception:  # noqa: BLE001
+        return {"exists": False}
 
 
 @app.get("/api/positions")
