@@ -23,15 +23,20 @@ sys.path.insert(0, "/app")
 
 import pandas as pd  # noqa: E402
 
-from scripts.research.swing.paper_forward import is_fresh_breakout  # noqa: E402
-from scripts.research.swing.strategies import build_risk_on  # noqa: E402
+from src.lab.protocol import (  # noqa: E402
+    MarketContext,
+    PortfolioView,
+    PositionView,
+    Side,
+    bar_index_for_date,
+    order_exits_before_entries,
+)
+from src.lab.strategies.breakout_52w import Breakout52wStrategy  # noqa: E402
+from src.lab.strategies._common import build_risk_on, is_fresh_breakout  # noqa: E402
 
 
 def _today_idx(df: pd.DataFrame, today: dt.date):
-    for i, ts in enumerate(df.index):
-        if ts.date() == today:
-            return i
-    return None
+    return bar_index_for_date(df, today)
 
 
 def plan_orders(
@@ -51,71 +56,84 @@ def plan_orders(
 ) -> list[dict]:
     """Return the list of orders to place today. Pure — no I/O, no side effects.
 
-    Exits are evaluated for every held position regardless of regime (a risk-off
-    day must never trap a position). Entries are gated on SPY > SMA(regime_sma).
+    Decisions come from Breakout52wStrategy.plan; this function only converts
+    intents into the legacy live_swing order-dict shape and applies cash sizing.
     """
-    plan: list[dict] = []
-    held = {p["symbol"] for p in positions}
+    views: list[PositionView] = []
+    for p in positions:
+        avg = float(p["avg_entry_price"])
+        qty = float(p["qty"])
+        views.append(
+            PositionView(
+                symbol=p["symbol"],
+                qty=qty,
+                avg_entry_price=avg,
+                entry_date=today,  # broker often lacks entry_date; exits don't need it
+                stop_price=avg * (1 - stop_pct),
+                notional=qty * avg,
+            )
+        )
+    portfolio = PortfolioView(
+        as_of=today,
+        equity=equity,
+        available_cash=available_cash,
+        positions=views,
+    )
+    extras: dict = {}
+    if spy_df is not None:
+        extras["SPY"] = spy_df
+    market = MarketContext(bars_by_symbol=bars_by_symbol, extras=extras, now=today)
+    params = {
+        "lookback": lookback,
+        "ma_exit": ma_exit,
+        "stop_pct": stop_pct,
+        "risk_pct": risk_pct,
+        "regime_sma": regime_sma,
+        "use_regime_gate": use_regime_gate,
+    }
+    intents = order_exits_before_entries(
+        Breakout52wStrategy().plan(portfolio, market, params)
+    )
 
-    # --- EXITS (always evaluated) ------------------------------------------
-    for pos in positions:
-        sym = pos["symbol"]
-        df = bars_by_symbol.get(sym)
+    plan: list[dict] = []
+    cash = available_cash
+    for intent in intents:
+        df = bars_by_symbol.get(intent.symbol)
         if df is None or df.empty:
             continue
-        i = _today_idx(df, today)
+        i = bar_index_for_date(df, today)
         if i is None:
             continue
-        stop = pos["avg_entry_price"] * (1 - stop_pct)
-        sma_exit = df["close"].rolling(ma_exit).mean().iloc[i]
-        low = float(df["low"].iloc[i])
         close = float(df["close"].iloc[i])
-        reason = None
-        if low <= stop:
-            reason = "stop"
-        elif (not pd.isna(sma_exit)) and close < sma_exit:
-            reason = "trend_break"
-        if reason:
+        if intent.side == Side.SELL:
+            qty = float(intent.qty or 0.0)
             plan.append({
-                "action": "sell", "symbol": sym, "qty": pos["qty"],
-                "price": close, "notional": pos["qty"] * close, "reason": reason,
+                "action": "sell",
+                "symbol": intent.symbol,
+                "qty": qty,
+                "price": close,
+                "notional": qty * close,
+                "reason": intent.reason,
             })
-
-    # --- REGIME GATE -------------------------------------------------------
-    risk_on = True
-    if use_regime_gate:
-        if spy_df is None or spy_df.empty:
-            risk_on = False
-        else:
-            risk_on = build_risk_on(spy_df, sma_period=regime_sma).get(today, False)
-    if not risk_on:
-        return plan  # exits only
-
-    # --- ENTRIES -----------------------------------------------------------
-    cash = available_cash
-    selling = {p["symbol"] for p in plan}  # don't buy something we're exiting today
-    for sym, df in bars_by_symbol.items():
-        if sym in held or sym in selling or df is None or df.empty:
-            continue
-        i = _today_idx(df, today)
-        if i is None or i < lookback:
-            continue
-        highs = df["high"].to_numpy()
-        closes = df["close"].to_numpy()
-        if not is_fresh_breakout(highs, closes, i, lookback):
-            continue
-        price = float(closes[i])
-        notional = min(risk_pct * equity / stop_pct, cash)
-        if notional < 1.0 or price <= 0:
-            continue
-        qty = round(notional / price, 4)
-        if qty <= 0:
-            continue
-        plan.append({
-            "action": "buy", "symbol": sym, "qty": qty,
-            "price": price, "notional": qty * price, "reason": "fresh_breakout",
-        })
-        cash -= notional
+        elif intent.side == Side.BUY:
+            entry_price = float(intent.metadata.get("entry_price", close))
+            if entry_price <= 0:
+                continue
+            notional = min(risk_pct * equity / stop_pct, cash)
+            if notional < 1.0:
+                continue
+            qty = round(notional / entry_price, 4)
+            if qty <= 0:
+                continue
+            plan.append({
+                "action": "buy",
+                "symbol": intent.symbol,
+                "qty": qty,
+                "price": entry_price,
+                "notional": qty * entry_price,
+                "reason": intent.reason,
+            })
+            cash -= notional
 
     return plan
 

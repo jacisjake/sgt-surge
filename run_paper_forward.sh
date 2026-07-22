@@ -6,6 +6,8 @@
 #
 # Steps the JSON ledger forward by one trading day inside the bot container,
 # which holds the Schwab token + deps. Simulated fills only — never a real order.
+# Engine: scripts.research.swing.paper_forward → src.lab Breakout52wStrategy + SimFill.
+# Lab CLI alternative: python -m scripts.lab.run_experiment --id breakout_52w_paper
 #
 # NOTE: lives at the repo root so deploy-remote.sh's `rsync --delete` preserves
 # it. The universe + ledger live under state/ (rsync-excluded, podman-mounted).

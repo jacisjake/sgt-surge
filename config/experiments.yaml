@@ -1,0 +1,29 @@
+# Trading Lab experiment registry (git). Server overrides: state/experiments/overrides.yaml
+version: 1
+defaults:
+  gates:
+    min_paper_trading_days: 40
+    min_closed_trades: 15
+    max_paper_drawdown: 0.20
+    require_positive_expectancy: true
+
+experiments:
+  breakout_52w_paper:
+    strategy: breakout_52w
+    params:
+      lookback: 252
+      ma_exit: 50
+      stop_pct: 0.08
+      risk_pct: 0.01
+      regime_sma: 200
+      use_regime_gate: true
+      slip_bps: 15.0
+    capital: 200.0
+    mode: paper
+    stage: paper
+    symbols_file: state/breakout_universe.txt
+    ledger_path: state/experiments/breakout_52w_paper/ledger.json
+    # Shim: keep writing legacy path while cron/dashboard still use it
+    legacy_ledger_path: state/swing_paper_breakout.json
+    schedule: "30 14 * * 1-5"
+    crontab_owner: "host:jacisjake run_paper_forward.sh"

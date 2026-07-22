@@ -3,6 +3,9 @@
 Each function accepts a DataFrame with columns open/high/low/close/volume and
 a DatetimeIndex, and returns list[float] of per-trade fractional returns after
 slippage.  Slippage is applied as 2 * slip_bps / 10_000 (entry + exit crossing).
+
+Shared lab helpers (stop_fill_price, build_risk_on, is_fresh_breakout) live in
+``src.lab.strategies._common`` and are re-exported here for research scripts.
 """
 from __future__ import annotations
 
@@ -11,16 +14,20 @@ from typing import Optional
 
 import pandas as pd
 
+from src.lab.strategies._common import build_risk_on, is_fresh_breakout, stop_fill_price
 
-def stop_fill_price(stop_level: float, bar_open: float) -> float:
-    """Realistic stop fill for a long position on the bar that triggers the stop.
-
-    A stop assumes you exit *at* the stop level, but if the bar gaps down and
-    opens below the stop, the first available price is the open — you fill there
-    (worse), not at the stop. Returns min(stop_level, bar_open) so gap-downs are
-    not flattered by an unrealistically good fill.
-    """
-    return min(stop_level, bar_open)
+__all__ = [
+    "stop_fill_price",
+    "build_risk_on",
+    "is_fresh_breakout",
+    "overnight_drift",
+    "short_term_reversal",
+    "short_term_reversal_trades",
+    "trend_pullback_trades",
+    "index_rsi2_trades",
+    "turn_of_month_trades",
+    "breakout_52w_trades",
+]
 
 
 def _rsi(close, period):
@@ -427,22 +434,6 @@ def turn_of_month_trades(
         })
 
     return result
-
-
-def build_risk_on(spy_df: pd.DataFrame, sma_period: int = 200) -> dict:
-    """Causal risk-on map for the market-regime gate: date -> (SPY close > SMA).
-
-    Causal by construction: a rolling mean at row i uses only closes up to i, so
-    the flag for a day never depends on the future. During SMA warmup the mean is
-    NaN, which we deliberately read as risk-OFF — an unknown regime must never be
-    treated as permission to trade.
-    """
-    sma = spy_df["close"].rolling(sma_period).mean().to_numpy()
-    closes = spy_df["close"].to_numpy()
-    return {
-        ts.date(): bool(not pd.isna(sma[i]) and closes[i] > sma[i])
-        for i, ts in enumerate(spy_df.index)
-    }
 
 
 def breakout_52w_trades(

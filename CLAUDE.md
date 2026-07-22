@@ -50,6 +50,17 @@ Active effort: capital safety for idle ORB + Trading Lab v1 cutover. Tracks:
 Decision gate: do NOT promote a strategy to live until it proves out in forward test.
 Bake-off findings: `docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
 
+## Trading Lab v1 (in progress)
+
+Design: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
+
+- **Protocol / strategies:** `src/lab/protocol.py`, `src/lab/strategies/`
+- **SimFill paper path:** `src/lab/fills/sim.py` (formulas pin to former `paper_forward.step`)
+- **Registry:** `config/experiments.yaml` → `src/lab/registry.py`
+- **CLI:** `python -m scripts.lab.run_experiment --id breakout_52w_paper`
+- **Cron shim:** `run_paper_forward.sh` still calls `paper_forward` (now lab-backed); legacy ledger `state/swing_paper_breakout.json`
+- **Capital safety:** `ENABLE_ORB_LIVE=false` by default; prefer server `TRADING_MODE=dry_run`
+
 ## Lab cutover checklist (server capital safety)
 
 Before/with first Trading Lab deploy on `ut.gitsum.rest`:

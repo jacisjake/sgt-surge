@@ -1,6 +1,9 @@
 """Stateful daily paper forward-tester for the 52-week-high breakout strategy.
 
 Simulates fills only — NEVER places a real order.
+
+Core decisions + SimFill live in ``src.lab``; this module remains the CLI and
+backward-compatible API for cron / tests.
 """
 from __future__ import annotations
 
@@ -9,16 +12,28 @@ import datetime
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
-from scripts.research.swing.strategies import build_risk_on, stop_fill_price
+from src.lab.fills.sim import apply_intents
+from src.lab.ledger import portfolio_from_paper
+from src.lab.protocol import MarketContext
+from src.lab.strategies._common import build_risk_on, is_fresh_breakout, stop_fill_price
+from src.lab.strategies.breakout_52w import Breakout52wStrategy
 
+# Re-export for tests / callers that imported helpers from this module
+__all__ = [
+    "new_state",
+    "load_state",
+    "save_state",
+    "is_fresh_breakout",
+    "step",
+    "run_once",
+    "main",
+    "stop_fill_price",
+    "build_risk_on",
+]
 
-# ---------------------------------------------------------------------------
-# State schema helpers
-# ---------------------------------------------------------------------------
 
 def new_state(starting_equity: float = 200.0) -> dict:
     """Return a blank ledger dict."""
@@ -50,39 +65,6 @@ def save_state(path: str, state: dict) -> None:
         f.write("\n")
 
 
-# ---------------------------------------------------------------------------
-# Strategy helpers
-# ---------------------------------------------------------------------------
-
-def is_fresh_breakout(
-    highs: list[float],
-    closes: list[float],
-    i: int,
-    lookback: int,
-) -> bool:
-    """True iff bar i is the FIRST bar of a new lookback-bar high.
-
-    Conditions:
-      1. closes[i] >= max(highs[i-lookback : i])     — current bar at new high
-      2. closes[i-1] < max(highs[prev_start : i-1])  — prior bar was NOT at new high
-
-    Guard: prev_start = max(0, i - 1 - lookback).
-    """
-    # Current bar must clear the lookback-bar high window
-    window_cur_max = max(highs[i - lookback: i])
-    if closes[i] < window_cur_max:
-        return False
-
-    # Prior bar must NOT have been at a new high
-    prev_start = max(0, i - 1 - lookback)
-    window_prev_max = max(highs[prev_start: i - 1])
-    return closes[i - 1] < window_prev_max
-
-
-# ---------------------------------------------------------------------------
-# Core step function
-# ---------------------------------------------------------------------------
-
 def step(
     state: dict,
     bars_by_symbol: dict[str, pd.DataFrame],
@@ -94,139 +76,35 @@ def step(
     slip_bps: float = 15.0,
     risk_on: bool | None = None,
 ) -> dict:
-    """Advance the paper ledger by one trading day.
+    """Advance the paper ledger by one trading day via lab Strategy + SimFill.
 
-    Parameters
-    ----------
-    state          : ledger dict (mutated in-place and returned)
-    bars_by_symbol : symbol -> daily DataFrame (cols open/high/low/close,
-                     DatetimeIndex), including today's row and >= lookback prior rows
-    today          : the trading date to process
-    risk_pct       : fraction of equity risked per trade
-    lookback       : bars in the 52-week-high lookback window
-    ma_exit        : SMA period for the trend-break exit
-    stop_pct       : hard-stop distance from entry as a fraction
-    slip_bps       : one-way slippage in basis points (applied twice per round-trip)
-
-    Returns the (mutated) state dict.
+    Parameters match the historical paper_forward.step API. When *risk_on* is
+    None, entries are allowed (no regime gate). When True/False, that value is
+    forced for entry gating (exits always run).
     """
-    # --- IDEMPOTENCY ----------------------------------------------------------
-    if state["last_date"] is not None:
-        if today <= datetime.date.fromisoformat(state["last_date"]):
-            return state
+    # risk_on None => allow entries; else force override
+    risk_on_override = True if risk_on is None else risk_on
 
-    slip = 2 * slip_bps / 10_000
-    equity = state["starting_equity"] + state["realized_pnl"]
+    portfolio = portfolio_from_paper(state, today)
+    market = MarketContext(bars_by_symbol=bars_by_symbol, extras={}, now=today)
+    params = {
+        "lookback": lookback,
+        "ma_exit": ma_exit,
+        "stop_pct": stop_pct,
+        "risk_pct": risk_pct,
+        "use_regime_gate": False,
+        "risk_on_override": risk_on_override,
+    }
+    intents = Breakout52wStrategy().plan(portfolio, market, params)
+    return apply_intents(
+        state,
+        intents,
+        market,
+        stop_pct=stop_pct,
+        slip_bps=slip_bps,
+        snapshot_equity=True,
+    )
 
-    # Helper: find the positional index for today in a DataFrame
-    def _today_idx(df: pd.DataFrame) -> int | None:
-        dates = [ts.date() for ts in df.index]
-        matches = [i for i, d in enumerate(dates) if d == today]
-        return matches[0] if matches else None
-
-    # --- EXITS FIRST ----------------------------------------------------------
-    remaining_positions = []
-    for pos in state["open_positions"]:
-        sym = pos["symbol"]
-        df = bars_by_symbol.get(sym)
-        if df is None or df.empty:
-            remaining_positions.append(pos)
-            continue
-
-        i = _today_idx(df)
-        if i is None:
-            remaining_positions.append(pos)
-            continue
-
-        closes = df["close"].to_numpy()
-        lows = df["low"].to_numpy()
-        opens = df["open"].to_numpy()
-        sma_exit_series = df["close"].rolling(ma_exit).mean()
-        sma_exit_today = sma_exit_series.iloc[i]
-
-        entry_price = pos["entry_price"]
-        stop_price = pos["stop_price"]
-        notional = pos["notional"]
-
-        exit_price = None
-        reason = None
-
-        if lows[i] <= stop_price:
-            # Gap-down through the stop fills at the open, not the stop level.
-            exit_price = stop_fill_price(stop_price, opens[i])
-            reason = "stop"
-        elif (not pd.isna(sma_exit_today)) and (closes[i] < sma_exit_today):
-            exit_price = closes[i]
-            reason = "trend_break"
-
-        if exit_price is not None:
-            # pnl = notional * ((exit_price*(1-slip)) / (entry_price*(1+slip)) - 1)
-            pnl = notional * ((exit_price * (1 - slip)) / (entry_price * (1 + slip)) - 1)
-            state["realized_pnl"] += pnl
-            state["available_cash"] += notional + pnl
-            equity = state["starting_equity"] + state["realized_pnl"]
-            state["closed_trades"].append({
-                "symbol": sym,
-                "entry_date": pos["entry_date"],
-                "exit_date": today.isoformat(),
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "pnl": pnl,
-                "reason": reason,
-            })
-        else:
-            remaining_positions.append(pos)
-
-    state["open_positions"] = remaining_positions
-
-    # --- ENTRIES --------------------------------------------------------------
-    # Market-regime gate. Deliberately placed AFTER exits: a risk-off day must
-    # never trap an open position, it only stops us opening new ones.
-    if risk_on is False:
-        state["last_date"] = today.isoformat()
-        return state
-
-    open_symbols = {p["symbol"] for p in state["open_positions"]}
-
-    for sym, df in bars_by_symbol.items():
-        if sym in open_symbols:
-            continue
-        if df is None or df.empty:
-            continue
-
-        i = _today_idx(df)
-        if i is None or i < lookback:
-            continue
-
-        highs = df["high"].to_numpy()
-        closes = df["close"].to_numpy()
-
-        if not is_fresh_breakout(highs, closes, i, lookback):
-            continue
-
-        entry_price = closes[i]
-        notional = min(risk_pct * equity / stop_pct, state["available_cash"])
-        if notional < 1.0:
-            continue
-
-        stop_price = entry_price * (1 - stop_pct)
-        state["open_positions"].append({
-            "symbol": sym,
-            "entry_date": today.isoformat(),
-            "entry_price": entry_price,
-            "stop_price": stop_price,
-            "notional": notional,
-        })
-        state["available_cash"] -= notional
-        open_symbols.add(sym)
-
-    state["last_date"] = today.isoformat()
-    return state
-
-
-# ---------------------------------------------------------------------------
-# run_once — fetch bars and advance state
-# ---------------------------------------------------------------------------
 
 def run_once(
     client,
@@ -240,23 +118,10 @@ def run_once(
     use_regime_gate: bool = True,
     regime_sma: int = 200,
 ) -> dict:
-    """Fetch daily bars and step the paper ledger forward by one day.
-
-    Parameters
-    ----------
-    client          : SchwabClient with get_history(symbol, timeframe, start, end)
-    symbols         : list of ticker strings to process
-    state_path      : path to the JSON ledger file
-    use_regime_gate : gate entries on SPY close > SPY SMA(regime_sma). Validated
-                      config: lifts expectancy +0.97%->+1.19%/trade (t 4.6->5.5)
-                      and halves max drawdown, chiefly by sitting out bear tape.
-    Others          : forwarded directly to step()
-
-    Returns the updated state dict.
-    """
+    """Fetch daily bars and step the paper ledger forward by one day."""
     import datetime as _dt
+
     today_wall = _dt.date.today()
-    # Fetch bars starting ~2 years ago (generous window for lookback+warmup)
     fetch_start = today_wall - _dt.timedelta(days=(lookback + 30) * 2)
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}
@@ -270,13 +135,8 @@ def run_once(
         state = load_state(state_path)
         return state
 
-    # today = last bar date across all symbols (the most-recent shared trading day)
     today = max(df.index[-1].date() for df in bars_by_symbol.values())
 
-    # --- Market-regime gate -------------------------------------------------
-    # Fetched separately: SPY need not be in the trading universe, and a failed
-    # SPY fetch must not silently flip us to "risk-on" — unknown regime is
-    # risk-OFF, so we skip entries rather than trade blind.
     risk_on: bool | None = None
     if use_regime_gate:
         spy = client.get_history("SPY", "1Day", fetch_start, today_wall)
@@ -288,21 +148,28 @@ def run_once(
             risk_on = risk_map.get(today, False)
             sma_now = float(spy["close"].rolling(regime_sma).mean().iloc[-1])
             spy_now = float(spy["close"].iloc[-1])
-            print(f"  [REGIME] SPY {spy_now:.2f} vs SMA{regime_sma} {sma_now:.2f} "
-                  f"-> {'RISK-ON' if risk_on else 'RISK-OFF (no new entries)'}")
+            print(
+                f"  [REGIME] SPY {spy_now:.2f} vs SMA{regime_sma} {sma_now:.2f} "
+                f"-> {'RISK-ON' if risk_on else 'RISK-OFF (no new entries)'}"
+            )
 
     state = load_state(state_path)
     prev_open = len(state["open_positions"])
     prev_closed = len(state["closed_trades"])
 
     state = step(
-        state, bars_by_symbol, today,
-        risk_pct=risk_pct, lookback=lookback, ma_exit=ma_exit,
-        stop_pct=stop_pct, slip_bps=slip_bps, risk_on=risk_on,
+        state,
+        bars_by_symbol,
+        today,
+        risk_pct=risk_pct,
+        lookback=lookback,
+        ma_exit=ma_exit,
+        stop_pct=stop_pct,
+        slip_bps=slip_bps,
+        risk_on=risk_on,
     )
     save_state(state_path, state)
 
-    # Print summary
     equity = state["starting_equity"] + state["realized_pnl"]
     new_opens = state["open_positions"][prev_open:]
     new_closes = state["closed_trades"][prev_closed:]
@@ -312,20 +179,20 @@ def run_once(
     if new_opens:
         print("  NEW ENTRIES:")
         for pos in new_opens:
-            print(f"    {pos['symbol']}  entry={pos['entry_price']:.2f}  "
-                  f"stop={pos['stop_price']:.2f}  notional=${pos['notional']:.2f}")
+            print(
+                f"    {pos['symbol']}  entry={pos['entry_price']:.2f}  "
+                f"stop={pos['stop_price']:.2f}  notional=${pos['notional']:.2f}"
+            )
     if new_closes:
         print("  EXITS:")
         for t in new_closes:
-            print(f"    {t['symbol']}  exit={t['exit_price']:.2f}  "
-                  f"pnl=${t['pnl']:.2f}  reason={t['reason']}")
+            print(
+                f"    {t['symbol']}  exit={t['exit_price']:.2f}  "
+                f"pnl=${t['pnl']:.2f}  reason={t['reason']}"
+            )
     print()
     return state
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     """CLI for the paper forward-tester."""
