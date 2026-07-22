@@ -37,8 +37,17 @@ MA_EXIT = 50
 STOP_PCT = 0.08
 SLIP_BPS = 15.0
 
-STATE_PATH = "/app/state/swing_paper_breakout.json"
 UNIVERSE_PATH = "/app/state/breakout_universe.txt"
+
+
+def _state_path() -> str:
+    """Lab ledger path with legacy migrate (breakout_52w_paper)."""
+    try:
+        from src.lab.paths import paper_ledger_path
+
+        return str(paper_ledger_path(state_dir="/app/state", migrate=True))
+    except Exception:
+        return "/app/state/swing_paper_breakout.json"
 
 
 def main() -> int:
@@ -47,6 +56,7 @@ def main() -> int:
     from src.bot.config import get_bot_config
     from src.core.schwab_client import SchwabClient
 
+    STATE_PATH = _state_path()
     symbols = [s.strip().upper() for s in Path(UNIVERSE_PATH).read_text().split() if s.strip()]
 
     cfg = get_bot_config()

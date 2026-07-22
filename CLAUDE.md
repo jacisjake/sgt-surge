@@ -24,53 +24,44 @@ sudo systemctl reload caddy
 
 ## Trading Context
 
-- **Broker**: Charles Schwab API (schwab-py). Migration off tastytrade is **complete** — the live bot on `ut.gitsum.rest` runs Schwab and is authenticated (`src/core/schwab_client.py`, `schwab_stream.py`). Token auto-refreshes (`state/schwab_token.json`).
-- **Starting capital**: ~$270
-- **Goal**: $25,000
-- **Live strategy (deployed)**: Opening Range Breakout (ORB)
-  - Timeframe: 5-min bars (Schwab streams 1-min, aggregated internally)
-  - Symbol universe: pre-market gappers, top 5 via TradingView (configurable)
-  - Opening-range window: 9:30–9:45 ET
-  - Entry rule: long-only; single 5-min close above OR high with volume filter
-  - Stop: OR low. Target: entry + 2R, with progressive R-trailing (breakeven floor at +1R, chandelier overlay above)
-  - Max trades/day: cash-account-constrained (no fixed cap)
-  - Position sizing: hybrid (~90% BP deploy, capped by risk %)
-- **Trading mode**: `TRADING_MODE` is `dry_run` | `live` only (no `paper`). Default is `dry_run` (simulated fills). Real ORB broker submits also require `ENABLE_ORB_LIVE=true` (default **false**).
+- **Broker**: Charles Schwab API (schwab-py). Token auto-refreshes (`state/schwab_token.json`).
+- **Starting capital**: ~$200 cash account; goal $25,000 (north-star measurement only).
+- **Live ORB money**: **OFF by default** — `ENABLE_ORB_LIVE=false`; ops should use `TRADING_MODE=dry_run` on the server. Stream/scan may still run.
+- **Primary edge under test**: `breakout_52w` paper experiment (lab), weekday cron via `run_paper_forward.sh`.
 - **Migration design**: see `docs/superpowers/specs/2026-05-08-schwab-migration-design.md`
 - **Trading Lab v1 design**: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
 
 ## Strategy Switch — Current State (as of 2026-07-22)
 
-Active effort: capital safety for idle ORB + Trading Lab v1 cutover. Tracks:
+- **ORB** — process kept for auth/stream/dashboard; real orders gated off. Idle since ~2026-06-04.
+- **`breakout_52w`** — lab paper experiment + optional live candidate after promote. Bake-off +55% research claim; forward paper is source of promotion truth.
+- **`short_term_reversal`** — research stage in registry; promote after backtest report.
+- **`runner_momentum`** — **spec only**; out of lab v1.
 
-- **ORB** — stream/scan may still run; real money path gated by `ENABLE_ORB_LIVE=false` (default) and ops should set server `TRADING_MODE=dry_run`. Last real signal 2026-06-04; account flat ~$199.
-- **`breakout_52w`** (52-week-high swing momentum) — bake-off winner (+55% backtest), **dry-run paper forward-tester** via `run_paper_forward.sh` (weekday cron). Not yet promoted to live.
-- **`runner_momentum`** — **spec only** (`docs/superpowers/specs/2026-07-01-runner-momentum-backtest-design.md`); nothing implemented.
+Decision gate: do NOT promote a strategy to live until paper forward proves out (soft gates + `--force` audit only when intentional).
 
-Decision gate: do NOT promote a strategy to live until it proves out in forward test.
 Bake-off findings: `docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
 
-## Trading Lab v1 (in progress)
+## Trading Lab v1
 
 Design: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
 
-- **Protocol / strategies:** `src/lab/protocol.py`, `src/lab/strategies/` (`breakout_52w`, `short_term_reversal`)
-- **SimFill paper path:** `src/lab/fills/sim.py` (formulas pin to former `paper_forward.step`)
-- **Registry:** `config/experiments.yaml` → `src/lab/registry.py` (+ `state/experiments/overrides.yaml` for stage)
+- **Protocol / strategies:** `src/lab/protocol.py`, `src/lab/strategies/`
+- **SimFill:** `src/lab/fills/sim.py`
+- **Registry:** `config/experiments.yaml` + `state/experiments/overrides.yaml` (stage/promote)
 - **CLI:**
   - `python -m scripts.lab.run_experiment --id breakout_52w_paper`
   - `python -m scripts.lab.promote --check|--to paper|live|--demote`
-- **Live:** LiveRunner preview default; `--live` only when stage=live and `TRADING_MODE=live`
-- **Backtest:** day-step `src/lab/runners/backtest.py` (promotion SoT)
-- **Cron shim:** `run_paper_forward.sh` still calls `paper_forward` (lab-backed); legacy ledger `state/swing_paper_breakout.json`
-- **Capital safety:** `ENABLE_ORB_LIVE=false` by default; prefer server `TRADING_MODE=dry_run`
+  - `python -m scripts.lab.scoreboard --id breakout_52w_paper`
+- **Live:** LiveRunner preview default; real submits need stage=live + `TRADING_MODE=live` + `ENABLE_ORB_LIVE=false`
+- **Paper ledger:** `state/experiments/breakout_52w_paper/ledger.json` (auto-migrates from `state/swing_paper_breakout.json`)
+- **Cron:** `run_paper_forward.sh` → lab `run_experiment`; token watch also alerts on ledger staleness (>3 weekdays)
+- **Capital safety:** leave `ENABLE_ORB_LIVE` false; prefer server `TRADING_MODE=dry_run`
 
-## Lab cutover checklist (server capital safety)
+## Lab cutover checklist (server)
 
-Before/with first Trading Lab deploy on `ut.gitsum.rest`:
-
-1. Set `/opt/sgt-schwab/.env` → `TRADING_MODE=dry_run` (and leave `ENABLE_ORB_LIVE` unset/false).
+1. Set `/opt/sgt-schwab/.env` → `TRADING_MODE=dry_run` (leave `ENABLE_ORB_LIVE` unset/false).
 2. Restart **only** `sgt-schwab-bot` (never `podman stop -a`).
-3. Verify `curl -s http://localhost:8080/api/status` shows `"trading_mode":"dry_run"`. Note: `"mode":"running"` is **auth-based**, not proof of ORB live trading.
-4. Keep Schwab token refresh (`state/schwab_token.json`) and `run_paper_forward.sh` cron; healthcheck is auth-based until rewritten.
-5. Do **not** set `ENABLE_ORB_LIVE=true` unless intentionally re-enabling ORB live money.
+3. Verify `/api/status` shows `"trading_mode":"dry_run"`. `"mode":"running"` is auth-based, not ORB trading.
+4. Keep token refresh + `run_paper_forward.sh` cron; run `bash scripts/healthcheck.sh` for operator checks.
+5. Optional: one-time paper catch-up if ledger stalled — uses lab path via `paper_catchup.py`.

@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.lab.fills.sim import apply_intents
 from src.lab.ledger import load_state, portfolio_from_paper, save_state
+from src.lab.paths import maybe_migrate_legacy
 from src.lab.protocol import MarketContext
 from src.lab.registry import Experiment, resolve_ledger_path
 from src.lab.strategies import get_strategy
@@ -37,7 +38,11 @@ def run_paper_day(
     use_regime_gate = bool(params.get("use_regime_gate", True))
     regime_sma = int(params.get("regime_sma", 200))
 
-    path = state_path or resolve_ledger_path(exp)
+    if state_path is None:
+        maybe_migrate_legacy(exp)
+        path = resolve_ledger_path(exp)
+    else:
+        path = state_path
     symbols = _read_symbols(exp.symbols_file)
     if not symbols:
         return {"ok": False, "error": f"no symbols in {exp.symbols_file}", "ledger": path}

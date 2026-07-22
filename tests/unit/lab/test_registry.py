@@ -20,12 +20,12 @@ def test_load_default_experiments_yaml():
     assert exp.legacy_ledger_path == "state/swing_paper_breakout.json"
 
 
-def test_resolve_prefers_legacy_when_missing_new(tmp_path):
+def test_resolve_prefers_lab_path_when_neither_exists():
     reg = load_registry("config/experiments.yaml", override_path="/nonexistent/x.yaml")
     exp = reg["breakout_52w_paper"]
-    # neither path may exist in CI — resolve_ledger_path falls back to legacy when set
+    # neither path may exist in CI — prefer lab ledger_path as write target
     path = resolve_ledger_path(exp)
-    assert path in (exp.ledger_path, exp.legacy_ledger_path)
+    assert path == exp.ledger_path
 
 
 def test_assert_can_run_paper_ok():

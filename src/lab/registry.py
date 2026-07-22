@@ -106,10 +106,16 @@ def _to_experiment(exp_id: str, raw: dict) -> Experiment:
 
 
 def resolve_ledger_path(exp: Experiment) -> str:
-    """Prefer existing legacy path during shim window, else ledger_path."""
+    """Prefer lab ledger_path; fall back to legacy only if new file missing.
+
+    Migration (PR14): when ledger_path exists, always use it. When only the
+    legacy file exists, return legacy so readers still work; writers should call
+    ``src.lab.paths.maybe_migrate_legacy`` to copy forward.
+    """
+    ledger = Path(exp.ledger_path)
+    if ledger.exists():
+        return exp.ledger_path
     if exp.legacy_ledger_path and Path(exp.legacy_ledger_path).exists():
-        return exp.legacy_ledger_path
-    if exp.legacy_ledger_path and not Path(exp.ledger_path).exists():
         return exp.legacy_ledger_path
     return exp.ledger_path
 

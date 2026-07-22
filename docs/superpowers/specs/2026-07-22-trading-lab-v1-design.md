@@ -5,7 +5,7 @@
 | **Author** | TBD |
 | **Date** | 2026-07-22 |
 | **Branch** | `cleaning` |
-| **Status** | Approved (rev 4 — design-doc review consensus) |
+| **Status** | Approved (rev 4) — **implemented on `cleaning`** (Safety→Productize) |
 | **Workspace** | `/Users/jacobmadsen/Projects/Trading/sgt-schwab` |
 | **Deploy host** | `jacisjake@ut.gitsum.rest` → `/opt/sgt-schwab/` |
 

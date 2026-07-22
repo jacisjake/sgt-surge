@@ -201,8 +201,8 @@ def main(argv=None) -> int:
     )
     p.add_argument("--symbols-file", required=True,
                    help="Path to whitespace-delimited ticker file")
-    p.add_argument("--state-file", default="state/swing_paper_breakout.json",
-                   help="Path to JSON ledger file (default: state/swing_paper_breakout.json)")
+    p.add_argument("--state-file", default="state/experiments/breakout_52w_paper/ledger.json",
+                   help="Path to JSON ledger file (lab default; legacy path still readable via migrate)")
     p.add_argument("--risk-pct", type=float, default=0.01,
                    help="Fraction of equity risked per trade (default 0.01)")
     p.add_argument("--lookback", type=int, default=252,

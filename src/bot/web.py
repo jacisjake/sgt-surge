@@ -663,12 +663,17 @@ async def positions() -> list[dict]:
 
 @app.get("/api/paper")
 async def paper_forward() -> dict:
-    """Read-only view of the breakout_52w paper-forward ledger written daily by
-    scripts/research/swing/paper_forward.py. Simulated only — no real orders."""
+    """Read-only view of the breakout_52w paper-forward ledger (lab experiment).
+
+    Simulated only — no real orders. Path resolved via registry (lab ledger with
+    legacy fallback).
+    """
     if _bot is None:
         return {"exists": False}
     try:
-        path = Path(_bot.config.state_dir) / "swing_paper_breakout.json"
+        from src.lab.paths import paper_ledger_path
+
+        path = paper_ledger_path(state_dir=_bot.config.state_dir)
         if not path.exists():
             return {"exists": False}
         data = json.loads(path.read_text())
@@ -697,12 +702,12 @@ async def paper_forward() -> dict:
 
 @app.get("/api/compare")
 async def compare() -> dict:
-    """Head-to-head of live ORB vs the breakout_52w paper test.
+    """Head-to-head of live bot ledger vs breakout_52w paper (lab) experiment.
 
     Edge metrics (win rate, avg win/loss, expectancy, equal-weight return) are
     sizing-independent — each closed trade is reduced to its price return
-    exit/entry-1 — so the two can be compared despite different position sizing.
-    ORB's real-dollar P&L and live account equity are reported separately.
+    exit/entry-1. Live account equity is reported separately. ORB live money is
+    retired by default (ENABLE_ORB_LIVE=false); the live side may be idle.
     """
     if _bot is None:
         return {"orb": None, "paper": None}
@@ -716,11 +721,13 @@ async def compare() -> dict:
     except Exception:
         orb["account_equity"] = None
 
-    # Paper breakout_52w — from the daily ledger.
+    # Paper breakout_52w — from the daily lab ledger (legacy path fallback).
     paper = comparison_stats([])
     paper["realized_pnl"] = 0.0
     try:
-        path = Path(_bot.config.state_dir) / "swing_paper_breakout.json"
+        from src.lab.paths import paper_ledger_path
+
+        path = paper_ledger_path(state_dir=_bot.config.state_dir)
         if path.exists():
             data = json.loads(path.read_text())
             closed = data.get("closed_trades", [])

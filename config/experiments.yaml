@@ -23,10 +23,10 @@ experiments:
     stage: paper
     symbols_file: state/breakout_universe.txt
     ledger_path: state/experiments/breakout_52w_paper/ledger.json
-    # Shim: keep writing legacy path while cron/dashboard still use it
+    # Legacy path: auto-migrated to ledger_path on first lab paper run / web read
     legacy_ledger_path: state/swing_paper_breakout.json
     schedule: "30 14 * * 1-5"
-    crontab_owner: "host:jacisjake run_paper_forward.sh"
+    crontab_owner: "host:jacisjake run_paper_forward.sh → lab run_experiment"
 
   # Promoted to live only via scripts.lab.promote --to live (writes overrides)
   breakout_52w_live:

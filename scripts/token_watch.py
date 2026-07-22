@@ -77,6 +77,32 @@ def main() -> int:
         subject = f"[sgt-schwab] Schwab token expires in {hours:.0f}h — re-auth needed"
 
     sent = send_email_alert(subject, build_body(level, message, status), cfg)
+
+    # Also alert if the primary paper ledger stopped advancing (cron silence).
+    try:
+        from src.lab.metrics.daily_equity import check_experiment_staleness
+        from src.lab.registry import load_registry
+
+        reg = load_registry()
+        if "breakout_52w_paper" in reg:
+            stale = check_experiment_staleness(reg["breakout_52w_paper"], max_sessions=3)
+            if stale.get("stale"):
+                print(f"[STALE] paper ledger: {stale.get('reason')}")
+                if alerts_configured(cfg):
+                    send_email_alert(
+                        "[sgt-schwab] WARNING: paper ledger stale — cron may be dead",
+                        (
+                            f"breakout_52w_paper last_date={stale.get('last_date')}\n"
+                            f"as_of={stale.get('as_of')}\n"
+                            f"weekdays_since={stale.get('weekdays_since')}\n"
+                            f"ledger={stale.get('ledger_path')}\n\n"
+                            "Check run_paper_forward.sh cron and Schwab token.\n"
+                        ),
+                        cfg,
+                    )
+    except Exception as e:  # noqa: BLE001
+        print(f"[STALE] check skipped: {e}", file=sys.stderr)
+
     return 0 if sent else 1
 
 

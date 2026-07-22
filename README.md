@@ -2,31 +2,30 @@
 
 > **DISCLAIMER: This project is for educational and research purposes only. It is not financial advice. Trading stocks involves substantial risk of loss. Past performance is not indicative of future results. You could lose some or all of your invested capital. Do not trade with money you cannot afford to lose. By using this software, you acknowledge that you are solely responsible for your own trading decisions and any resulting financial outcomes.**
 
-Algorithmic momentum day-trading bot for Charles Schwab. Built for small accounts with aggressive risk management.
+Trading lab for Charles Schwab: run strategy experiments on paper and (gated) real
+money. Built for small cash accounts with aggressive risk controls.
 
-## Strategy
+## What this system is
 
-**Opening Range Breakout (ORB)** -- long-only breakout trading on 5-minute bars.
+**Primary product: Trading Lab** (`src/lab/`, `config/experiments.yaml`)
 
-- **Scanner**: TradingView screener for pre-market gappers (top 5, configurable), enriched with relative volume and float data
-- **Opening range**: 09:30-09:45 ET window; the OR high/low is locked at 09:45 ET
-- **Entry**: single 5-min close above the OR high, with a volume filter (long-only)
-- **Stop**: OR low. **Target**: entry + 2R, with progressive R-trailing (breakeven floor at +1R, chandelier overlay above)
-- **Schedule**: scanning during the RTH session, safety-net flatten at 15:55 ET (no overnight)
-- **Position sizing**: hybrid (~90% of buying power deploy, capped by max risk %)
-- **Max trades/day**: cash-account-constrained (no fixed cap)
+| Experiment | Mode | Notes |
+|---|---|---|
+| `breakout_52w_paper` | paper (cron) | Bake-off winner (+55% research backtest); forward-tested daily |
+| `breakout_52w_live` | live after promote | Same edge; LiveRunner preview by default |
+| `short_term_reversal_research` | research | Promote to paper after backtest report |
 
-Bars: Schwab streams 1-min bars, aggregated internally to 5-min. The live strategy
-lives in `src/bot/signals/orb.py`.
+- Paper engine: SimFill day-step (same formulas as the former paper_forward tester)
+- Promote: `python -m scripts.lab.promote --check|--to paper|live`
+- Scoreboard: `python -m scripts.lab.scoreboard --id breakout_52w_paper`
+- Cron: `run_paper_forward.sh` → lab PaperRunner for `breakout_52w_paper`
+- Design: [`docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`](docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md)
+- Bake-off: [`docs/superpowers/results/2026-06-11-strategy-bakeoff.md`](docs/superpowers/results/2026-06-11-strategy-bakeoff.md)
 
-### Research track
-
-A separate research effort (`scripts/research/`, `docs/superpowers/`) backtests
-structurally different edges to eventually replace ORB. The current front-runner,
-`breakout_52w` (52-week-high swing momentum), runs as a **dry-run paper
-forward-tester** (`run_paper_forward.sh`, weekday cron) alongside the live bot for
-head-to-head comparison via the `/api/compare` dashboard. See
-`docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
+**ORB (Opening Range Breakout)** remains in the long-running bot process for stream/scan/dashboard
+compat, but **real ORB money is off by default** (`ENABLE_ORB_LIVE=false`). Prefer server
+`TRADING_MODE=dry_run`. ORB rules (for reference only): 5-min gapper ORB long, stop at OR low,
+target 2R with trail — see `src/bot/signals/orb.py`.
 
 ## Prerequisites
 
