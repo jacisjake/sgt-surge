@@ -14,9 +14,6 @@ python-dotenv>=1.0.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 
-# Database (for trade history)
-sqlalchemy>=2.0.0
-
 # HTTP requests (for float data provider)
 requests>=2.31.0
 
@@ -31,10 +28,6 @@ apscheduler>=3.10.0
 
 # Logging
 loguru>=0.7.0
-
-# Regime terminal dashboard
-streamlit>=1.30.0
-plotly>=5.18.0
 
 # Testing
 pytest>=8.0.0
