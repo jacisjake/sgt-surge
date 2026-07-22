@@ -135,18 +135,15 @@ sgt-schwab/
 │   ├── run_bot.py               # Main entry point (container CMD)
 │   ├── healthcheck.sh           # Remote health monitoring
 │   ├── smoke_schwab.py          # Schwab auth/connectivity smoke test
-│   ├── backtest_orb.py          # Backtest the ORB strategy
-│   ├── backtest_*.py            # Other backtest scripts
+│   ├── backtest_orb.py          # Legacy ORB research backtest
 │   └── research/                # Strategy bake-off + swing paper-forward harness
 ├── deploy/
 │   ├── podman-compose.yml       # Container orchestration
-│   ├── deploy-remote.sh         # Remote deployment script
-│   ├── sgt-schwab.service       # systemd service file
-│   └── com.jacobmadsen.sgt-schwab.plist  # macOS launchd config
-├── docs/superpowers/            # Plans, specs, and bake-off results
+│   └── deploy-remote.sh         # Remote deployment script
+├── docs/superpowers/            # Plans, specs, bake-off results, lab design
 ├── run_paper_forward.sh         # Daily breakout_52w paper forward-tester (cron)
 ├── tests/
-│   └── unit/                    # Unit tests (260 passing)
+│   └── unit/                    # Unit tests
 ├── state/                       # Runtime state (not tracked)
 └── logs/                        # Application logs (not tracked)
 ```
@@ -159,9 +156,9 @@ All configuration is done through environment variables (or `.env` file). See `.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SCHWAB_CLIENT_ID` | Yes | OAuth client ID from Schwab developer portal |
-| `SCHWAB_CLIENT_SECRET` | Yes | OAuth client secret |
-| `SCHWAB_ACCOUNT_NUMBER` | Yes | Your Schwab account number |
+| `SCHWAB_APP_KEY` | Yes | OAuth app key from Schwab developer portal |
+| `SCHWAB_APP_SECRET` | Yes | OAuth app secret |
+| `SCHWAB_ACCOUNT_HASH` | Optional | Pin a specific Schwab account hash |
 
 ### Trading
 
@@ -204,13 +201,6 @@ Operator checklist for server cutover:
 ### Local (no container)
 
 Just run `python scripts/run_bot.py`. The bot runs in the foreground.
-
-For background execution on macOS, edit `deploy/com.jacobmadsen.sgt-schwab.plist` with your paths and load it:
-
-```bash
-cp deploy/com.jacobmadsen.sgt-schwab.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.jacobmadsen.sgt-schwab.plist
-```
 
 ### Container (Podman or Docker)
 
@@ -256,14 +246,7 @@ ssh jacisjake@ut.gitsum.rest
 nano /opt/sgt-schwab/.env
 ```
 
-**Optional: systemd auto-start** -- copy and enable the service file:
-
-```bash
-ssh jacisjake@ut.gitsum.rest
-sudo cp /opt/sgt-schwab/deploy/sgt-schwab.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sgt-schwab
-```
+**Process management:** production runs under Podman (`restart: always` in `podman-compose.yml`). There is no checked-in systemd unit or launchd plist; use `deploy-remote.sh` and `podman-compose`.
 
 **Optional: reverse proxy with Caddy** -- if you want HTTPS access to the dashboard:
 
