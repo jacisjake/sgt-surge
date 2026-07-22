@@ -5,9 +5,11 @@ from typing import Callable
 
 from src.lab.protocol import Strategy
 from src.lab.strategies.breakout_52w import Breakout52wStrategy
+from src.lab.strategies.short_term_reversal import ShortTermReversalStrategy
 
 STRATEGY_REGISTRY: dict[str, Callable[[], Strategy]] = {
     "breakout_52w": Breakout52wStrategy,
+    "short_term_reversal": ShortTermReversalStrategy,
 }
 
 

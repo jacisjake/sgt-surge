@@ -59,8 +59,10 @@ def apply_intents(
 
             if intent.reason == "stop":
                 exit_price = stop_fill_price(stop_price, float(opens[i]))
+            elif intent.reason == "target" and intent.target_price is not None:
+                exit_price = float(intent.target_price)
             else:
-                # trend_break / target / time → raw close (or metadata override)
+                # trend_break / time → raw close (or metadata override)
                 exit_price = float(intent.metadata.get("exit_price", closes[i]))
 
             pnl = notional * ((exit_price * (1 - slip)) / (entry_price * (1 + slip)) - 1)
@@ -112,13 +114,19 @@ def apply_intents(
                 if intent.stop_price is not None
                 else entry_price * (1 - stop_pct)
             )
-            open_by_sym[intent.symbol] = {
+            pos_rec: dict[str, Any] = {
                 "symbol": intent.symbol,
                 "entry_date": as_of.isoformat(),
                 "entry_price": entry_price,
                 "stop_price": stop_price,
                 "notional": notional,
             }
+            meta = dict(intent.metadata or {})
+            if intent.target_price is not None:
+                meta.setdefault("target_price", intent.target_price)
+            if meta:
+                pos_rec["metadata"] = meta
+            open_by_sym[intent.symbol] = pos_rec
             state["available_cash"] -= notional
 
     state["open_positions"] = list(open_by_sym.values())

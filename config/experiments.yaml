@@ -27,3 +27,38 @@ experiments:
     legacy_ledger_path: state/swing_paper_breakout.json
     schedule: "30 14 * * 1-5"
     crontab_owner: "host:jacisjake run_paper_forward.sh"
+
+  # Promoted to live only via scripts.lab.promote --to live (writes overrides)
+  breakout_52w_live:
+    strategy: breakout_52w
+    params:
+      lookback: 252
+      ma_exit: 50
+      stop_pct: 0.08
+      risk_pct: 0.01
+      regime_sma: 200
+      use_regime_gate: true
+      slip_bps: 15.0
+    capital: 200.0
+    mode: live
+    stage: paper
+    symbols_file: state/breakout_universe.txt
+    ledger_path: state/experiments/breakout_52w_live/ledger.json
+    live_audit_path: state/experiments/breakout_52w_live/live_audit.json
+
+  short_term_reversal_research:
+    strategy: short_term_reversal
+    params:
+      down_days: 3
+      hold: 5
+      stop_pct: 0.05
+      target_pct: 0.10
+      ma: 200
+      risk_pct: 0.01
+      slip_bps: 15.0
+    capital: 200.0
+    mode: paper
+    stage: research
+    symbols_file: state/breakout_universe.txt
+    ledger_path: state/experiments/str_paper/ledger.json
+    backtest_report_path: state/experiments/str_paper/backtest_report.json

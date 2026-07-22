@@ -141,16 +141,20 @@ def plan_orders(
 def execute_plan(plan: list[dict], executor) -> list[dict]:
     """Place each order for real. Returns per-order results; never raises."""
     from loguru import logger
-    results = []
-    for o in plan:
-        try:
-            res = executor.execute_market_order(o["symbol"], o["qty"], o["action"],
-                                                 wait_for_fill=False)
-            results.append({**o, "status": "submitted", "result": str(res)})
-            logger.info("[LIVE-SWING] {} {} {} -> {}", o["action"], o["qty"], o["symbol"], res)
-        except Exception as e:  # noqa: BLE001
-            results.append({**o, "status": "rejected", "error": f"{type(e).__name__}: {e}"})
-            logger.error("[LIVE-SWING] {} {} {} REJECTED: {}", o["action"], o["qty"], o["symbol"], e)
+    from src.lab.fills.broker import execute_plan as _lab_execute
+
+    results = _lab_execute(plan, executor)
+    for r in results:
+        if r.get("status") == "submitted":
+            logger.info(
+                "[LIVE-SWING] {} {} {} -> {}",
+                r["action"], r["qty"], r["symbol"], r.get("result"),
+            )
+        else:
+            logger.error(
+                "[LIVE-SWING] {} {} {} REJECTED: {}",
+                r["action"], r["qty"], r["symbol"], r.get("error"),
+            )
     return results
 
 

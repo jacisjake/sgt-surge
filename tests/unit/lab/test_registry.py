@@ -41,6 +41,13 @@ def test_assert_can_run_live_blocked_for_paper_stage():
         assert_can_run(reg, exp, "live", trading_mode="live")
 
 
+def test_assert_can_run_research_blocks_paper():
+    reg = load_registry("config/experiments.yaml", override_path="/nonexistent/x.yaml")
+    exp = reg["short_term_reversal_research"]
+    with pytest.raises(PermissionError):
+        assert_can_run(reg, exp, "paper")
+
+
 def test_override_merges(tmp_path):
     base = {
         "version": 1,

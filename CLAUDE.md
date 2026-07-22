@@ -54,11 +54,15 @@ Bake-off findings: `docs/superpowers/results/2026-06-11-strategy-bakeoff.md`.
 
 Design: `docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`
 
-- **Protocol / strategies:** `src/lab/protocol.py`, `src/lab/strategies/`
+- **Protocol / strategies:** `src/lab/protocol.py`, `src/lab/strategies/` (`breakout_52w`, `short_term_reversal`)
 - **SimFill paper path:** `src/lab/fills/sim.py` (formulas pin to former `paper_forward.step`)
-- **Registry:** `config/experiments.yaml` → `src/lab/registry.py`
-- **CLI:** `python -m scripts.lab.run_experiment --id breakout_52w_paper`
-- **Cron shim:** `run_paper_forward.sh` still calls `paper_forward` (now lab-backed); legacy ledger `state/swing_paper_breakout.json`
+- **Registry:** `config/experiments.yaml` → `src/lab/registry.py` (+ `state/experiments/overrides.yaml` for stage)
+- **CLI:**
+  - `python -m scripts.lab.run_experiment --id breakout_52w_paper`
+  - `python -m scripts.lab.promote --check|--to paper|live|--demote`
+- **Live:** LiveRunner preview default; `--live` only when stage=live and `TRADING_MODE=live`
+- **Backtest:** day-step `src/lab/runners/backtest.py` (promotion SoT)
+- **Cron shim:** `run_paper_forward.sh` still calls `paper_forward` (lab-backed); legacy ledger `state/swing_paper_breakout.json`
 - **Capital safety:** `ENABLE_ORB_LIVE=false` by default; prefer server `TRADING_MODE=dry_run`
 
 ## Lab cutover checklist (server capital safety)
