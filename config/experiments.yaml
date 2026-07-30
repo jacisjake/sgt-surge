@@ -46,6 +46,26 @@ experiments:
     ledger_path: state/experiments/breakout_52w_live/ledger.json
     live_audit_path: state/experiments/breakout_52w_live/live_audit.json
 
+  # Same strategy/params as breakout_52w_paper, but over the screened low-price
+  # universe from scripts.lab.build_universe. Kept as a separate experiment so
+  # breakout_52w_paper's promotion evidence is unaffected — the +55% bake-off
+  # result was measured on the mega-cap list and does not transfer here.
+  breakout_52w_lowprice_paper:
+    strategy: breakout_52w
+    params:
+      lookback: 252
+      ma_exit: 50
+      stop_pct: 0.08
+      risk_pct: 0.01
+      regime_sma: 200
+      use_regime_gate: true
+      slip_bps: 15.0
+    capital: 200.0
+    mode: paper
+    stage: research
+    symbols_file: state/universes/liquid_lowprice.txt
+    ledger_path: state/experiments/breakout_52w_lowprice_paper/ledger.json
+
   short_term_reversal_research:
     strategy: short_term_reversal
     params:

@@ -184,6 +184,60 @@ class TradingViewScreener:
             logger.error(f"[TV-SCREEN] Active query failed: {e}")
             return []
 
+    def get_price_band(
+        self,
+        top_n: int = 400,
+        min_price: float = 3.0,
+        max_price: float = 25.0,
+    ) -> list[dict]:
+        """
+        List major-exchange symbols inside a price band, busiest first.
+
+        Candidate discovery for the lab universe builder. Unlike the gainer
+        queries above there is deliberately no change% predicate: this is a
+        standing universe, not a momentum scan, so today's movers are not
+        what we want. Liquidity and history are settled downstream against
+        Schwab daily bars (see scripts/lab/build_universe.py).
+
+        Returns:
+            List of {"symbol", "close", "volume"} dicts, ordered by volume desc
+        """
+        try:
+            total_count, df = (
+                Query()
+                .select("name", "close", "volume", "exchange")
+                .where(
+                    col("close").between(min_price, max_price),
+                    col("exchange").isin(self.US_EXCHANGES),
+                )
+                .order_by("volume", ascending=False)
+                .limit(top_n)
+                .set_markets("america")
+                .get_scanner_data()
+            )
+
+            rows: list[dict] = []
+            for _, r in df.iterrows():
+                symbol = str(r.get("name") or "").upper()
+                if not symbol:
+                    continue
+                rows.append({
+                    "symbol": symbol,
+                    "close": float(r.get("close") or 0.0),
+                    "volume": float(r.get("volume") or 0.0),
+                })
+
+            logger.info(
+                f"[TV-SCREEN] Price band ${min_price:.2f}-${max_price:.2f}: "
+                f"{len(rows)} candidates (total matching: {total_count})"
+            )
+            self._last_query_time = datetime.now()
+            return rows
+
+        except Exception as e:
+            logger.error(f"[TV-SCREEN] Price-band query failed: {e}")
+            return []
+
     def get_float_cache(self) -> dict[str, float]:
         """
         Get cached float data extracted from TradingView results.
