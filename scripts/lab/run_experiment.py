@@ -42,7 +42,6 @@ def main(argv=None) -> int:
             print(f"Refusing --live: TRADING_MODE={cfg.trading_mode.value}", file=sys.stderr)
             return 1
         executor = OrderExecutor(client, trading_mode=TradingMode.LIVE)
-        executor.allow_fractional = True
         preview = False
 
     result = runner.run(

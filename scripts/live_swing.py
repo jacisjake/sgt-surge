@@ -7,7 +7,7 @@ fractional orders through the Schwab executor instead of simulated fills.
 Run once daily (cron), after the close. Two-stage by design:
   1. plan_orders(): PURE — given today's data + current broker positions, return
      the exact list of orders it would place. Testable and previewable.
-  2. execute_plan(): place those orders via OrderExecutor(allow_fractional=True).
+  2. execute_plan(): place those orders via OrderExecutor (fractional by default).
 
 Default is PREVIEW (no orders). --live places real orders and requires the bot's
 trading_mode to be 'live'. Fractional support is unproven on Schwab's API — the
@@ -249,7 +249,6 @@ def _run(args) -> int:
 
     print("\nPLACING REAL FRACTIONAL ORDERS...")
     ex = OrderExecutor(client, trading_mode=TradingMode.LIVE)
-    ex.allow_fractional = True
     results = execute_plan(plan, ex)
     for r in results:
         print(f"  {r['status'].upper():9} {r['action']} {r['qty']:.4f} {r['symbol']}"

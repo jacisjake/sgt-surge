@@ -81,15 +81,26 @@ class OrderExecutor:
         "504",
     ]
 
-    def __init__(self, client: SchwabClient, trading_mode=None):
+    def __init__(
+        self,
+        client: SchwabClient,
+        trading_mode=None,
+        allow_fractional: bool = True,
+    ):
         from config.settings import TradingMode
 
         self.client = client
         if trading_mode is None:
             trading_mode = TradingMode.LIVE
         self.trading_mode = trading_mode
-        # Send fractional quantities to the API (unproven support — off by default).
-        self.allow_fractional = False
+        # Fractional quantities are the norm on a small account: at
+        # risk_pct*equity/stop_frac (~$24/position on $200) almost every order
+        # is a fraction of a share. Schwab accepts them — the live lab path has
+        # filled fractional buys. It is a constructor argument rather than an
+        # attribute poked after construction so a caller cannot silently
+        # inherit the wrong mode by forgetting to set it; that mismatch left
+        # the bot rejecting every stop order for a fractional position locally.
+        self.allow_fractional = allow_fractional
 
     def execute_market_order(
         self,
@@ -279,15 +290,15 @@ class OrderExecutor:
     ) -> str:
         """Submit order to Schwab based on type. Returns order_id string.
 
-        Quantity handling depends on `allow_fractional` (default False):
-          - False: round DOWN to whole shares, reject < 1 (Schwab's documented
-            behavior; keeps existing large-account trading unchanged).
-          - True: round to 4 decimals, reject only <= 0. Lets a fractional order
-            reach the API so fractional support can be tested empirically. Whether
-            Schwab actually accepts it is unproven and settled by a real order.
+        Quantity handling depends on `allow_fractional` (default True):
+          - True: round to 4 decimals, reject only <= 0. Required on a small
+            account, where position sizing lands well below one share of most
+            names.
+          - False: round DOWN to whole shares, reject < 1. For callers that
+            must trade whole lots.
         """
         original_qty = qty
-        if getattr(self, "allow_fractional", False):
+        if self.allow_fractional:
             qty = round(float(qty), 4)
             if qty <= 0:
                 raise ValueError(f"Cannot buy 0 shares of {symbol}")

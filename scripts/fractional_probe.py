@@ -69,7 +69,6 @@ def main() -> int:
               f"Pick a pricier symbol or fewer dollars.")
 
     ex = OrderExecutor(client, trading_mode=TradingMode.LIVE)
-    ex.allow_fractional = True
     try:
         result = ex.execute_market_order(args.symbol, qty, "buy", wait_for_fill=False)
     except Exception as e:  # noqa: BLE001
