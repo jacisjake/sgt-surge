@@ -49,107 +49,193 @@ _DASHBOARD_HTML = """\
   <meta charset="utf-8">
   <title>sgt-schwab — Trading Lab</title>
   <style>
-    body { font-family: ui-monospace, monospace; background: #0e1117; color: #c9d1d9; margin: 0; padding: 24px; }
-    h1 { font-size: 18px; margin: 0 0 16px; }
-    .panel { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; font-size: 13px; }
-    th { color: #8b949e; font-weight: normal; }
-    .ok { color: #3fb950; }
-    .warn { color: #d29922; }
-    .err { color: #f85149; }
-    .muted { color: #8b949e; }
-    button { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+    /* Design tokens — see DESIGN.md (Fintech Design System, paper/charcoal). */
+    :root {
+      --paper: #F6F5ED; --surface: #FFFFFF; --secondary: #EBEAE4; --border: #D5D4CD;
+      --charcoal: #2C2C2A; --text: #444444; --text-sub: #4A4A4A; --text-muted: #6B6A64;
+      --accent: #8BB8A8;
+      --ok-bg: #B9FBC0; --ok-fg: #0B4019;
+      --err-bg: #FECACA; --err-fg: #7F1D1D;
+      --warn-bg: #F2E4C9; --warn-fg: #8A6A1F;
+      --r-md: 6px; --r-card: 12px; --r-pill: 9999px;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      --font-serif: ui-serif, Georgia, 'Times New Roman', Times, serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: var(--font-sans); font-weight: 500; line-height: 1.6;
+           background: var(--paper); color: var(--text); margin: 0; padding: 40px 24px;
+           -webkit-font-smoothing: antialiased; }
+    ::selection { background: var(--secondary); }
+    .wrap { max-width: 64rem; margin: 0 auto; }
+    /* masthead + document header */
+    .masthead { display: flex; align-items: center; justify-content: space-between;
+                gap: 12px; flex-wrap: wrap; margin-bottom: 40px; }
+    .brand { display: inline-flex; align-items: center; padding: 6px 18px; background: var(--surface);
+             border: 1px solid var(--border); border-radius: var(--r-pill);
+             font-family: var(--font-serif); font-size: 15px; letter-spacing: -0.01em;
+             color: var(--charcoal); }
+    .brand em { font-style: italic; }
+    h1 { font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.02em;
+         font-size: clamp(30px, 5vw, 52px); line-height: 1.05; color: var(--charcoal); margin: 0 0 12px; }
+    h1 em { font-style: italic; }
+    .lead { font-size: 15px; color: var(--text-sub); margin: 0 0 40px; max-width: 62ch; }
+    /* panels */
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card);
+             padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(44,44,42,0.04); }
+    .panel h2 { font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.14em; color: var(--charcoal); margin: 0 0 14px; }
+    .note { font-family: var(--font-sans); text-transform: none; letter-spacing: 0;
+            font-weight: 500; font-size: 12px; color: var(--text-muted); margin-left: 8px; }
+    .field { display: inline-block; margin-right: 26px; }
+    .label { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
+             letter-spacing: 0.1em; color: var(--text-muted); margin-right: 6px; }
+    .metric { font-family: var(--font-mono); font-size: 15px; color: var(--charcoal); }
+    /* tables — bordered container, monospace headers */
+    table { width: 100%; border-collapse: separate; border-spacing: 0;
+            border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+    th { font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase;
+         letter-spacing: 0.1em; color: var(--text-sub); background: var(--secondary);
+         text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+    td { font-size: 13px; padding: 9px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr { transition: background-color 120ms ease; }
     tr.clickable { cursor: pointer; }
-    tr.clickable:hover td { background: #1c2230; }
+    tr.clickable:hover td { background: var(--secondary); }
+    /* right-aligned numeric columns (DESIGN.md: right-aligned numeric data) */
+    #pos-table th:nth-child(n+2), #pos-table td:nth-child(n+2),
+    #orders-table th:nth-child(2), #orders-table td:nth-child(2),
+    #orders-table th:nth-child(5), #orders-table td:nth-child(5),
+    #paper-open th:nth-child(n+3), #paper-open td:nth-child(n+3),
+    #paper-closed th:nth-child(3), #paper-closed td:nth-child(3) { text-align: right; }
+    #pos-table td:nth-child(n+2),
+    #orders-table td:nth-child(2), #orders-table td:nth-child(5),
+    #paper-open td:nth-child(n+3),
+    #paper-closed td:nth-child(3) { font-family: var(--font-mono); font-size: 12px; }
+    /* status + badges */
+    .ok { color: var(--ok-fg); }
+    .warn { color: var(--warn-fg); }
+    .err { color: var(--err-fg); }
+    .muted { color: var(--text-muted); }
+    .badge { display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+             text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 10px;
+             border-radius: var(--r-pill); border: 1px solid var(--border);
+             background: var(--secondary); color: var(--text-sub); margin-left: 6px; }
+    .badge.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: transparent; }
+    .badge.warn { background: var(--warn-bg); color: var(--warn-fg); border-color: transparent; }
+    .badge.err { background: var(--err-bg); color: var(--err-fg); border-color: transparent; }
+    .badge.muted { background: var(--secondary); color: var(--text-muted); border-color: var(--border); }
+    /* controls */
+    button { font-family: var(--font-sans); font-weight: 500; font-size: 13px;
+             background: var(--charcoal); color: #fff; border: 1px solid var(--charcoal);
+             padding: 8px 16px; border-radius: var(--r-md); cursor: pointer;
+             transition: background-color 120ms ease, color 120ms ease; }
+    button:hover { background: #000; border-color: #000; }
+    button.ghost { background: transparent; color: var(--charcoal); border-color: var(--border); }
+    button.ghost:hover { background: var(--surface); }
+    :focus-visible { outline: 2px solid var(--charcoal); outline-offset: 2px; }
     .spark { display: block; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
-             border: 1px solid #30363d; margin-left: 6px; }
-    .badge.ok { border-color: #238636; color: #3fb950; }
-    .badge.warn { border-color: #9e6a03; color: #d29922; }
-    .badge.err { border-color: #da3633; color: #f85149; }
     /* modal */
-    .overlay { position: fixed; inset: 0; background: rgba(1,4,9,0.75); display: none;
+    .overlay { position: fixed; inset: 0; background: rgba(44,44,42,0.45); display: none;
                align-items: center; justify-content: center; z-index: 50; }
     .overlay.open { display: flex; }
-    .modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-             padding: 16px; width: 640px; max-width: calc(100vw - 32px); }
-    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-    .modal-title { font-size: 15px; }
-    .modal-sub { color: #8b949e; font-size: 12px; margin-left: 10px; }
-    .toggle { display: inline-flex; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
-    .toggle button { background: #21262d; color: #c9d1d9; border: none; padding: 5px 12px;
-                     border-radius: 0; font-size: 12px; }
-    .toggle button.active { background: #1f6feb; color: white; }
-    .close-x { background: none; color: #8b949e; padding: 4px 8px; font-size: 16px; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card);
+             padding: 20px; width: 660px; max-width: calc(100vw - 32px);
+             box-shadow: 0 20px 40px -10px rgba(0,0,0,0.4); }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .modal-title { font-family: var(--font-serif); font-size: 19px; color: var(--charcoal); }
+    .modal-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 10px; }
+    .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md);
+              overflow: hidden; margin-right: 8px; }
+    .toggle button { background: var(--surface); color: var(--text-sub); border: none;
+                     border-radius: 0; padding: 5px 12px; font-size: 11px;
+                     font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
+    .toggle button.active { background: var(--charcoal); color: #fff; }
+    .close-x { background: none; border: none; color: var(--text-muted); padding: 4px 8px; font-size: 18px; }
+    .close-x:hover { background: none; color: var(--charcoal); }
+    .cols { display: flex; gap: 32px; flex-wrap: wrap; }
+    .col { flex: 1; min-width: 280px; }
+    @media (max-width: 640px) { body { padding: 24px 16px; } .panel { padding: 16px; } }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
   </style>
 </head>
 <body>
-  <h1>sgt-schwab — Trading Lab
-    <span id="hdr-trading" class="badge muted">—</span>
-    <span id="hdr-orb" class="badge muted">ORB money —</span>
-  </h1>
+  <div class="wrap">
+  <header class="masthead">
+    <span class="brand">sgt-<em>schwab</em></span>
+    <div>
+      <span id="hdr-trading" class="badge muted">—</span>
+      <span id="hdr-orb" class="badge muted">ORB money —</span>
+    </div>
+  </header>
+
+  <h1>Trading <em>Lab</em></h1>
+  <p class="lead">Live broker state, the breakout_52w paper experiment, and today's
+     market conditions in one view.</p>
 
   <div class="panel">
-    <strong>Auth:</strong> <span id="auth"></span>
-    <span style="margin-left: 16px;"><strong>Process:</strong> <span id="mode"></span></span>
-    <span style="margin-left: 16px;"><strong>TRADING_MODE:</strong> <span id="trading-mode">—</span></span>
-    <span style="margin-left: 16px;"><strong>Token:</strong> <span id="token">—</span></span>
-    <button id="oauth-btn" style="margin-left: 16px; display:none">Authorize Schwab</button>
+    <h2>Status</h2>
+    <span class="field"><span class="label">Auth</span><span id="auth"></span></span>
+    <span class="field"><span class="label">Process</span><span id="mode"></span></span>
+    <span class="field"><span class="label">Trading mode</span><span id="trading-mode">—</span></span>
+    <span class="field"><span class="label">Token</span><span id="token">—</span></span>
+    <button id="oauth-btn" class="ghost" style="display:none">Authorize Schwab</button>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Account</h2>
+    <h2>Account</h2>
     <div id="account"></div>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Today's tape
-      <span style="font-weight:normal;color:#6e7681">&mdash; conditions + study plays (not auto-trades)</span>
-      <span id="edu-meta" style="font-weight:normal;color:#8b949e"></span></h2>
+    <h2>Today's tape
+      <span class="note">&mdash; conditions + study plays (not auto-trades)</span>
+      <span id="edu-meta" class="note"></span></h2>
     <div id="edu-summary" style="margin-bottom:8px;font-size:13px"></div>
     <div id="edu-tags" style="margin-bottom:8px;font-size:12px"></div>
-    <div id="edu-plays" style="font-size:12px;color:#c9d1d9"></div>
-    <div id="edu-actions" style="margin-top:8px;font-size:11px;color:#8b949e"></div>
+    <div id="edu-plays" style="font-size:12px"></div>
+    <div id="edu-actions" class="muted" style="margin-top:8px;font-size:11px"></div>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Broker positions
-      <span style="font-weight:normal;color:#6e7681">&mdash; real Schwab account (may be flat)</span></h2>
+    <h2>Broker positions
+      <span class="note">&mdash; real Schwab account (may be flat)</span></h2>
     <table id="pos-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Open orders
-      <span style="font-weight:normal;color:#6e7681">&mdash; broker open/pending (market orders may wait for open)</span></h2>
+    <h2>Open orders
+      <span class="note">&mdash; broker open/pending (market orders may wait for open)</span></h2>
     <table id="orders-table"><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Type</th><th>Status</th><th>Filled</th><th>Submitted</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
   <div class="panel">
-    <h2 style="font-size:14px;margin:0 0 8px;color:#8b949e">Lab paper — breakout_52w
-      <span style="font-weight:normal;color:#6e7681">(experiment breakout_52w_paper · SimFill)</span>
-      <span id="paper-meta" style="font-weight:normal;color:#8b949e"></span></h2>
+    <h2>Lab paper — breakout_52w
+      <span class="note">(experiment breakout_52w_paper · SimFill)</span>
+      <span id="paper-meta" class="note"></span></h2>
     <div id="paper-summary" style="margin-bottom:8px;font-size:13px"></div>
-    <div id="paper-scoreboard" style="margin-bottom:10px;font-size:12px;color:#8b949e"></div>
-    <div style="display:flex;gap:24px;flex-wrap:wrap">
-      <div style="flex:1;min-width:280px">
-        <div style="color:#8b949e;font-size:12px;margin-bottom:4px">Open positions</div>
+    <div id="paper-scoreboard" class="muted" style="margin-bottom:10px;font-size:12px"></div>
+    <div class="cols">
+      <div class="col">
+        <div class="label" style="margin-bottom:6px;display:block">Open positions</div>
         <table id="paper-open"><thead><tr>
           <th>Symbol</th><th>Entry date</th><th>Entry</th><th>Stop</th><th>Notional</th>
         </tr></thead><tbody></tbody></table>
       </div>
-      <div style="flex:1;min-width:280px">
-        <div style="color:#8b949e;font-size:12px;margin-bottom:4px">Recent closed</div>
+      <div class="col">
+        <div class="label" style="margin-bottom:6px;display:block">Recent closed</div>
         <table id="paper-closed"><thead><tr>
           <th>Symbol</th><th>Held</th><th>P&amp;L</th><th>Reason</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
   </div>
+
+  </div><!-- /.wrap -->
 
   <div id="overlay" class="overlay">
     <div class="modal">
@@ -210,7 +296,7 @@ function sparkline(closes, orHigh, orLow) {
   const w = 120, h = 28;
   const svg = svgEl('svg', {width: w, height: h, class: 'spark', viewBox: '0 0 ' + w + ' ' + h});
   if (!closes || closes.length < 2) {
-    const t = svgEl('text', {x: 2, y: h - 9, fill: '#8b949e', 'font-size': 11});
+    const t = svgEl('text', {x: 2, y: h - 9, fill: '#6B6A64', 'font-size': 11});
     t.textContent = '—';
     svg.appendChild(t);
     return svg;
@@ -222,12 +308,12 @@ function sparkline(closes, orHigh, orLow) {
   const x = i => pad + i * (w - 2 * pad) / (closes.length - 1);
   const y = v => pad + (hi - v) * (h - 2 * pad) / span;
   if (orHigh != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orHigh), y2: y(orHigh),
-      stroke: '#d29922', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.6}));
+      stroke: '#8A6A1F', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.6}));
   if (orLow != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orLow), y2: y(orLow),
-      stroke: '#8b949e', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.4}));
+      stroke: '#6B6A64', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.4}));
   const up = closes[closes.length - 1] >= closes[0];
   svg.appendChild(svgEl('polyline', {points: closes.map((c, i) => x(i) + ',' + y(c)).join(' '),
-      fill: 'none', stroke: up ? '#3fb950' : '#f85149', 'stroke-width': 1.2}));
+      fill: 'none', stroke: up ? '#0B4019' : '#7F1D1D', 'stroke-width': 1.2}));
   return svg;
 }
 
@@ -253,8 +339,8 @@ function chartScales(d, W, H) {
 function axisAndOR(svg, s, d) {
   [s.lo, (s.lo + s.hi) / 2, s.hi].forEach(function (v) {
     svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: s.y(v), y2: s.y(v),
-        stroke: '#21262d', 'stroke-width': 0.5}));
-    const t = svgEl('text', {x: 4, y: s.y(v) + 3, fill: '#8b949e', 'font-size': 10});
+        stroke: '#D5D4CD', 'stroke-width': 0.5}));
+    const t = svgEl('text', {x: 4, y: s.y(v) + 3, fill: '#6B6A64', 'font-size': 10});
     t.textContent = '$' + v.toFixed(2);
     svg.appendChild(t);
   });
@@ -266,8 +352,8 @@ function axisAndOR(svg, s, d) {
     t.textContent = label;
     svg.appendChild(t);
   }
-  if (d.or_high != null) orLine(d.or_high, '#d29922', 'OR high', -3);
-  if (d.or_low != null) orLine(d.or_low, '#8b949e', 'OR low', 11);
+  if (d.or_high != null) orLine(d.or_high, '#8A6A1F', 'OR high', -3);
+  if (d.or_low != null) orLine(d.or_low, '#6B6A64', 'OR low', 11);
 }
 
 function lineChart(d) {
@@ -278,11 +364,11 @@ function lineChart(d) {
   if (s.n >= 2) {
     const up = s.bars[s.n - 1].c >= s.bars[0].c;
     svg.appendChild(svgEl('polyline', {points: s.bars.map((b, i) => s.x(i) + ',' + s.y(b.c)).join(' '),
-        fill: 'none', stroke: up ? '#3fb950' : '#f85149', 'stroke-width': 1.5}));
+        fill: 'none', stroke: up ? '#0B4019' : '#7F1D1D', 'stroke-width': 1.5}));
     const last = s.bars[s.n - 1];
-    svg.appendChild(svgEl('circle', {cx: s.x(s.n - 1), cy: s.y(last.c), r: 3, fill: up ? '#3fb950' : '#f85149'}));
+    svg.appendChild(svgEl('circle', {cx: s.x(s.n - 1), cy: s.y(last.c), r: 3, fill: up ? '#0B4019' : '#7F1D1D'}));
   } else {
-    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#8b949e', 'font-size': 12, 'text-anchor': 'middle'});
+    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#6B6A64', 'font-size': 12, 'text-anchor': 'middle'});
     t.textContent = 'no bars buffered yet';
     svg.appendChild(t);
   }
@@ -301,7 +387,7 @@ function candleChart(d) {
   maxV = maxV || 1;
   const vy = v => H - (v / maxV) * (volH - 4);
   for (let i = 0; i < n; i++) {
-    const b = s.bars[i], up = b.c >= b.o, col = up ? '#3fb950' : '#f85149';
+    const b = s.bars[i], up = b.c >= b.o, col = up ? '#0B4019' : '#7F1D1D';
     svg.appendChild(svgEl('line', {x1: xc(i), x2: xc(i), y1: s.y(b.h), y2: s.y(b.l), stroke: col, 'stroke-width': 1}));
     const top = Math.min(s.y(b.o), s.y(b.c)), hgt = Math.max(1, Math.abs(s.y(b.c) - s.y(b.o)));
     svg.appendChild(svgEl('rect', {x: xc(i) - bw / 2, y: top, width: bw, height: hgt, fill: col}));
@@ -309,9 +395,9 @@ function candleChart(d) {
         fill: col, opacity: 0.5}));
   }
   svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: H - volH, y2: H - volH,
-      stroke: '#30363d', 'stroke-width': 0.5}));
+      stroke: '#D5D4CD', 'stroke-width': 0.5}));
   if (n === 0) {
-    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#8b949e', 'font-size': 12, 'text-anchor': 'middle'});
+    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#6B6A64', 'font-size': 12, 'text-anchor': 'middle'});
     t.textContent = 'no bars buffered yet';
     svg.appendChild(t);
   }
@@ -400,13 +486,21 @@ async function refresh() {
   }
 
   if (status.account) {
-    setText('account',
-      'Equity: $' + status.account.equity.toFixed(2)
-      + ' | BP: $' + status.account.buying_power.toFixed(2)
-      + ' | Cash: $' + status.account.cash.toFixed(2)
-      + ' | DT count: ' + status.account.daytrade_count);
+    const a = status.account;
+    // Cash/buying power below zero means the account is overdrawn — a cash
+    // account cannot fund it, so surface it rather than burying it in a row.
+    const money = function (label, v) {
+      const cls = v < 0 ? ' err' : '';
+      return '<span class="field"><span class="label">' + label + '</span>'
+           + '<span class="metric' + cls + '">$' + v.toFixed(2) + '</span></span>';
+    };
+    document.getElementById('account').innerHTML =
+      money('Equity', a.equity) + money('Buying power', a.buying_power)
+      + money('Cash', a.cash)
+      + '<span class="field"><span class="label">Day trades</span>'
+      + '<span class="metric">' + a.daytrade_count + '</span></span>';
   } else {
-    setText('account', '-');
+    setText('account', '—');
   }
 
   // Education brief (cached condition + playbook)
@@ -423,7 +517,7 @@ async function refresh() {
       const primary = (edu.education || {}).primary;
       let playsHtml = '';
       if (primary) {
-        playsHtml += '<div style="margin-bottom:6px;color:#8b949e">' + (primary.title || '') + '</div>';
+        playsHtml += '<div class="label" style="margin-bottom:6px">' + (primary.title || '') + '</div>';
         (primary.plays || []).forEach(function (p) {
           playsHtml += '<div style="margin-bottom:6px"><b>' + (p.letter || '') + '</b> '
             + '<span class="muted">[' + (p.mode || 'study') + ']</span> '
