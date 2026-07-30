@@ -80,9 +80,10 @@ _DASHBOARD_HTML = """\
          font-size: clamp(30px, 5vw, 52px); line-height: 1.05; color: var(--charcoal); margin: 0 0 12px; }
     h1 em { font-style: italic; }
     .lead { font-size: 15px; color: var(--text-sub); margin: 0 0 40px; max-width: 62ch; }
-    /* panels */
-    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card);
-             padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(44,44,42,0.04); }
+    /* sections — hierarchy comes from whitespace + hairline rules, not cards.
+       Bordered containers are reserved for data tables (see DESIGN.md). */
+    .panel { margin-bottom: 44px; }
+    .panel + .panel { border-top: 1px solid var(--border); padding-top: 30px; }
     .panel h2 { font-family: var(--font-mono); font-size: 11px; font-weight: 600;
                 text-transform: uppercase; letter-spacing: 0.14em; color: var(--charcoal); margin: 0 0 14px; }
     .note { font-family: var(--font-sans); text-transform: none; letter-spacing: 0;
@@ -199,9 +200,10 @@ _DASHBOARD_HTML = """\
 
   <div class="panel">
     <h2>Broker positions
-      <span class="note">&mdash; real Schwab account (may be flat)</span></h2>
+      <span class="note">&mdash; real Schwab account (may be flat)</span>
+      <span id="pos-total" class="note"></span></h2>
     <table id="pos-table"><thead><tr>
-      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>P&amp;L</th>
+      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>Value</th><th>P&amp;L</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -546,17 +548,32 @@ async function refresh() {
   }
 
   const positions = await (await fetch('/sgt/api/positions')).json();
+  let posValue = 0;
   const posRows = positions.map(function (p) {
     const pnl = p.unrealized_pnl || 0;
+    const value = (p.qty || 0) * (p.current_price || 0);
+    posValue += value;
     return [
       {text: p.symbol},
       {text: String(p.qty)},
       {text: '$' + (p.entry_price || 0).toFixed(2)},
       {text: '$' + (p.current_price || 0).toFixed(2)},
+      {text: '$' + value.toFixed(2)},
       {text: '$' + pnl.toFixed(2), cls: pnl >= 0 ? 'ok' : 'err'},
     ];
   });
   renderTable('#pos-table tbody', posRows);
+  // Deployed capital vs equity: when these converge the account is fully
+  // committed, which is how the cash balance ends up at or below zero.
+  const posTotal = document.getElementById('pos-total');
+  if (positions.length) {
+    const eq = (status.account && status.account.equity) || 0;
+    const pctTxt = eq > 0 ? ' · ' + (posValue / eq * 100).toFixed(0) + '% of equity' : '';
+    posTotal.textContent = '· ' + positions.length + ' positions · $'
+                         + posValue.toFixed(2) + ' deployed' + pctTxt;
+  } else {
+    posTotal.textContent = '';
+  }
 
   const orders = await (await fetch('/sgt/api/orders')).json();
   const ordRows = orders.map(function (o) {

@@ -253,3 +253,16 @@ def test_bars_symbol_with_empty_buffer_returns_empty(bot_app):
     payload = r.json()
     assert payload["AAPL"]["closes"] == []
     assert payload["AAPL"]["current"] is None
+
+
+def test_dashboard_shows_position_value_and_total(bot_app):
+    """Per-position market value + a deployed total.
+
+    Eight ~$25 positions summing to the whole account is invisible when the
+    table only shows qty and price; the total is what makes it obvious.
+    """
+    client, _ = bot_app
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "<th>Value</th>" in r.text
+    assert 'id="pos-total"' in r.text
