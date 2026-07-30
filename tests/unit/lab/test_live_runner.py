@@ -133,3 +133,91 @@ def test_live_idempotency_skips_second_submit(tmp_path):
         exp, client, OkExec(), reg, preview=False, trading_mode="live"
     )
     assert out2.get("skipped") is True
+
+
+def test_degenerate_stop_rejects_instead_of_spending_all_cash():
+    """A stop at/above entry must skip the entry, not fail open to all cash.
+
+    stop_frac was floored at 1e-9, so risk_pct*equity/stop_frac exploded and
+    min(..., cash) silently became 'buy with every available dollar'.
+    """
+    intents = [
+        OrderIntent(
+            symbol="AAA",
+            side=Side.BUY,
+            reason="breakout",
+            stop_price=100.0,  # equal to entry -> zero stop distance
+            risk_pct=0.01,
+        )
+    ]
+    plan = intents_to_live_plan(
+        intents,
+        equity=1000.0,
+        available_cash=500.0,
+        stop_pct=0.08,
+        prices={"AAA": 100.0},
+    )
+    buys = [o for o in plan if o["action"] == "buy"]
+    assert buys == [], f"degenerate stop should plan no entry, got {buys}"
+
+
+def test_buy_leaves_cash_buffer_for_slippage():
+    """Sizing must not clamp to 100% of cash; market fills need headroom."""
+    intents = [
+        OrderIntent(
+            symbol="AAA",
+            side=Side.BUY,
+            reason="breakout",
+            stop_price=90.0,  # 10% stop distance
+            risk_pct=0.5,  # risk-based notional (5000) far exceeds cash
+        )
+    ]
+    plan = intents_to_live_plan(
+        intents,
+        equity=1000.0,
+        available_cash=500.0,
+        stop_pct=0.08,
+        prices={"AAA": 100.0},
+    )
+    buys = [o for o in plan if o["action"] == "buy"]
+    assert len(buys) == 1
+    assert buys[0]["notional"] < 500.0, (
+        f"planned notional {buys[0]['notional']} consumed all available cash"
+    )
+
+
+def _buy(symbol, risk_pct):
+    """BUY intent at a 10% stop distance below a $6.00 entry."""
+    return OrderIntent(
+        symbol=symbol, side=Side.BUY, reason="breakout",
+        stop_price=5.4, risk_pct=risk_pct,
+    )
+
+
+def test_qty_rounding_never_exceeds_available_cash():
+    """round() can round qty UP, planning more spend than the account holds."""
+    plan = intents_to_live_plan(
+        [_buy("AAA", 0.5)],  # risk-based size far exceeds cash -> cash-clamped
+        equity=1000.0,
+        available_cash=100.0,
+        stop_pct=0.08,
+        prices={"AAA": 6.0},
+        cash_buffer_pct=0.0,  # isolate rounding from the slippage buffer
+    )
+    assert plan[0]["notional"] <= 100.0, (
+        f"planned {plan[0]['notional']} exceeds available cash 100.0"
+    )
+
+
+def test_cumulative_planned_notional_never_exceeds_available_cash():
+    """cash was decremented by the pre-rounding notional, so spend drifted."""
+    plan = intents_to_live_plan(
+        [_buy("AAA", 0.006), _buy("BBB", 0.5)],  # risk-limited, then clamped
+        equity=1000.0,
+        available_cash=100.0,
+        stop_pct=0.08,
+        prices={"AAA": 6.0, "BBB": 6.0},
+        cash_buffer_pct=0.0,
+    )
+    total = sum(o["notional"] for o in plan if o["action"] == "buy")
+    assert total <= 100.0, f"planned total {total} exceeds available cash 100.0"
