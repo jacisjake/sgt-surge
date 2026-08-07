@@ -65,6 +65,29 @@ into the strategy; do not rewrite it.
 any sharp pullback and caps the runner — the same amputation as the 8% stop, one
 step later. Chandelier alone is what lets a winner reach 5R.
 
+### The chandelier needs per-position state — and today there is none
+
+`sim.py`'s chandelier walks `bars_after` for a single trade, carrying
+`highest_high` forward. The live path is stateless: it reads broker positions
+each afternoon and re-derives everything. Two consequences:
+
+- **`live_swing.py:71` sets `entry_date=today` for every broker position**, with
+  the comment *"broker lacks entry_date; exits don't need it."* That was true for
+  a fixed stop. It is fatal for a chandelier — `highest_high` since entry would
+  reset daily and the trail would never ratchet.
+- The broker returns average price and quantity, nothing else. Initial stop and
+  running high cannot be recovered from it.
+
+So the strategy requires a small position-state file, keyed by symbol:
+`entry_date`, `entry_price`, `initial_stop`, `highest_high`. Updated each run,
+reconciled against broker positions, and the source of truth for the trail.
+`highest_high` is recomputed from bars since `entry_date` rather than
+incrementally accumulated, so a missed run is self-healing.
+
+This is the one piece of state the design genuinely needs. ATR14 must also be
+computed from the daily bars — `sim.py` expects an `atr` column that
+`SchwabClient.get_history` does not provide.
+
 **Low-price universe.** Mega-caps do not have the right tail. The screen
 (price $3–25, ≥$5M median dollar volume, ≥280 bars) selects higher-beta names
 where a breakout can actually run. Also fixes fractional-share granularity: above
@@ -116,6 +139,11 @@ working regardless of the P&L line.
   clamp binds at both ends.
 - **Chandelier:** ratchets up, never down; never below initial stop; gap-through
   fills at the open; uncapped upside with `target=None`.
+- **Position state:** survives a missed run (`highest_high` recomputed from bars
+  since `entry_date`); reconciles when the broker and the state file disagree;
+  a position opened today gets a real `entry_date`, not a placeholder.
+- **ATR14:** computed correctly from daily bars, including the true-range gap
+  term, not just high−low.
 - **No target:** a position that runs 10R is never exited by a target.
 - **Journal:** R-multiple and regime tag recorded correctly on close.
 - **Universe:** screen honors price band, dollar-volume floor, and bar count.
