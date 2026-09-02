@@ -154,7 +154,8 @@ def check_live_gate(experiment_id, *, trading_mode, enable_orb_live,
     return None
 
 
-def reconcile_audit_meta(position_meta, held_symbols, journal_path, today) -> list[dict]:
+def reconcile_audit_meta(position_meta, held_symbols, journal_path, today,
+                         *, allow_empty: bool = False) -> list[dict]:
     """Journal and drop meta for positions the broker no longer holds.
 
     A position can leave the book without passing through this script's sell
@@ -166,6 +167,14 @@ def reconcile_audit_meta(position_meta, held_symbols, journal_path, today) -> li
     from src.lab.journal import append_closed_trade
 
     held = {str(s).upper() for s in held_symbols}
+
+    # A broker call that transiently returns nothing would otherwise journal the
+    # entire book as closed and wipe every initial_stop. A genuine full flatten
+    # pops its own meta, so "broker empty while meta is populated" is far more
+    # likely a failed call than a flat account. Refuse unless forced.
+    if not held and position_meta and not allow_empty:
+        return []
+
     dropped: list[dict] = []
     for sym in [s for s in list(position_meta) if str(s).upper() not in held]:
         meta = dict(position_meta.pop(sym) or {})
@@ -299,7 +308,12 @@ def _run(args) -> int:
     # their meta is lost, then drop them.
     _meta = audit.setdefault("position_meta", {})
     _held = {str(p.get("symbol") or "").upper() for p in positions}
-    _orphans = reconcile_audit_meta(_meta, _held, Path(args.journal_path), today)
+    if not _held and _meta and not args.reconcile_empty:
+        print(f"[RECONCILE] broker reported 0 positions but audit holds "
+              f"{len(_meta)} entries — skipping (looks like a failed call). "
+              f"Re-run with --reconcile-empty if the account is genuinely flat.")
+    _orphans = reconcile_audit_meta(_meta, _held, Path(args.journal_path), today,
+                                    allow_empty=bool(args.reconcile_empty))
     if _orphans:
         print(f"[RECONCILE] journalled and dropped {len(_orphans)} stale meta "
               f"entries: {', '.join(o['symbol'] for o in _orphans)}")
@@ -420,6 +434,9 @@ def main(argv=None) -> int:
     ap.add_argument("--k2", type=float, default=3.0)
     ap.add_argument("--atr-period", type=int, default=14)
     ap.add_argument("--use-ma-exit", action="store_true")
+    ap.add_argument("--reconcile-empty", action="store_true",
+                    help="allow reconciling the whole book when the broker reports "
+                         "zero positions (confirm the account is really flat)")
     ap.add_argument("--experiment-id", default="breakout_52w_live",
                     help="registry id whose promote gate governs live orders")
     ap.add_argument("--ignore-gate", action="store_true",

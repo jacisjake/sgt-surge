@@ -42,8 +42,8 @@ def test_nothing_dropped_when_every_symbol_is_still_held(tmp_path):
 def test_reconcile_is_idempotent(tmp_path):
     journal = tmp_path / "journal.json"
     meta = {"OLD": {"entry_date": "2026-08-01", "entry_price": 5.0, "initial_stop": 4.6}}
-    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2))
-    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2))
+    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2), allow_empty=True)
+    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2), allow_empty=True)
     assert len(json.loads(journal.read_text())) == 1   # not double-written
 
 
@@ -60,6 +60,35 @@ def test_regime_is_carried_into_the_reconciled_record(tmp_path):
     journal = tmp_path / "journal.json"
     meta = {"OLD": {"entry_date": "2026-08-01", "entry_price": 5.0, "initial_stop": 4.6,
                     "regime": {"risk_on": True, "spy_vs_sma200": 0.03}}}
-    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2))
+    reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2), allow_empty=True)
     rows = json.loads(journal.read_text())
     assert rows[0]["regime"]["risk_on"] is True
+
+
+def test_empty_broker_response_does_not_wipe_a_non_empty_book(tmp_path):
+    """An API hiccup returning zero positions must not journal the whole book.
+
+    A legitimate full flatten already pops its own meta, so 'broker reports
+    nothing while meta is populated' is far more likely a transient failure
+    than a real empty account. Reconciling it would destroy the initial_stop
+    for positions still held.
+    """
+    journal = tmp_path / "journal.json"
+    meta = {
+        "FRSH": {"entry_date": "2026-08-28", "entry_price": 13.86, "initial_stop": 12.83},
+        "ABC": {"entry_date": "2026-08-20", "entry_price": 9.68, "initial_stop": 8.83},
+    }
+    dropped = reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2))
+
+    assert dropped == []
+    assert sorted(meta) == ["ABC", "FRSH"]     # untouched
+    assert not journal.exists()
+
+
+def test_empty_broker_response_can_be_forced_when_genuinely_flat(tmp_path):
+    journal = tmp_path / "journal.json"
+    meta = {"ABC": {"entry_date": "2026-08-20", "entry_price": 9.68, "initial_stop": 8.83}}
+    dropped = reconcile_audit_meta(meta, set(), journal, datetime.date(2026, 9, 2),
+                                   allow_empty=True)
+    assert len(dropped) == 1
+    assert meta == {}
