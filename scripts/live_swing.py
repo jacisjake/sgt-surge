@@ -169,6 +169,57 @@ def check_live_gate(experiment_id, *, trading_mode, enable_orb_live,
     return None
 
 
+def reconcile_fill_prices(position_meta, broker_positions, *, tol: float = 1e-6) -> list[dict]:
+    """Rewrite audit entry/stop from the broker's actual average fill.
+
+    Orders are placed at 16:05, after the close, so they fill at the next
+    session's open — the planned price is not the price paid. The stop is
+    re-derived by preserving the *fraction* the ATR model produced, so the
+    trade still risks the intended 1% against the price actually paid. The
+    planned figures are kept alongside for the record.
+    """
+    by_sym = {}
+    for p in broker_positions or []:
+        sym = str(p.get("symbol") or "").upper()
+        try:
+            avg = float(p.get("avg_entry_price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if sym and avg > 0:
+            by_sym[sym] = avg
+
+    changed: list[dict] = []
+    for sym, meta in (position_meta or {}).items():
+        avg = by_sym.get(str(sym).upper())
+        if avg is None or not isinstance(meta, dict):
+            continue
+        planned_entry = meta.get("entry_price")
+        if planned_entry is None:
+            meta["entry_price"] = avg
+            changed.append({"symbol": sym, "planned_entry": None, "actual_entry": avg})
+            continue
+        planned_entry = float(planned_entry)
+        if abs(planned_entry - avg) <= tol or planned_entry <= 0:
+            continue
+
+        planned_stop = meta.get("initial_stop")
+        meta["planned_entry_price"] = planned_entry
+        meta["entry_price"] = avg
+        if planned_stop is not None:
+            planned_stop = float(planned_stop)
+            frac = (planned_entry - planned_stop) / planned_entry
+            meta["planned_initial_stop"] = planned_stop
+            meta["initial_stop"] = avg * (1.0 - frac)
+        changed.append({
+            "symbol": sym,
+            "planned_entry": planned_entry,
+            "actual_entry": avg,
+            "planned_stop": planned_stop,
+            "actual_stop": meta.get("initial_stop"),
+        })
+    return changed
+
+
 def reconcile_audit_meta(position_meta, held_symbols, journal_path, today,
                          *, allow_empty: bool = False) -> list[dict]:
     """Journal and drop meta for positions the broker no longer holds.
@@ -329,11 +380,23 @@ def _run(args) -> int:
               f"Re-run with --reconcile-empty if the account is genuinely flat.")
     _orphans = reconcile_audit_meta(_meta, _held, Path(args.journal_path), today,
                                     allow_empty=bool(args.reconcile_empty))
+
+    # Orders placed after the close fill at the next open, so the planned price
+    # is not the price paid. Correct entry and stop from the actual fill before
+    # planning, or exits are evaluated against a stop that was never real.
+    _fills = reconcile_fill_prices(_meta, positions)
+    for c in _fills:
+        if c.get("planned_stop") is not None:
+            print(f"[FILL] {c['symbol']}: entry {c['planned_entry']:.4f} -> "
+                  f"{c['actual_entry']:.4f}, stop {c['planned_stop']:.4f} -> "
+                  f"{c['actual_stop']:.4f}")
+        else:
+            print(f"[FILL] {c['symbol']}: entry -> {c['actual_entry']:.4f}")
+    if (_orphans or _fills) and args.audit_path:
+        save_audit(Path(args.audit_path), audit)
     if _orphans:
         print(f"[RECONCILE] journalled and dropped {len(_orphans)} stale meta "
               f"entries: {', '.join(o['symbol'] for o in _orphans)}")
-        if args.audit_path:
-            save_audit(Path(args.audit_path), audit)
 
     regime = None
     if spy is not None and not spy.empty:
