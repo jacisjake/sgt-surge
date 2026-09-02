@@ -37,7 +37,7 @@ def render(summary: dict, path: str) -> str:
         return "\n".join(L)
 
     L.append(f"  trades           {s['n_closed']}"
-             + (f"  ({s['n_unscored']} unscored — no initial stop on record)"
+             + (f"  ({s['n_unscored']} unscored — no R-multiple recoverable)"
                 if s["n_unscored"] else ""))
     L.append(f"  win rate         {_pct(s['win_rate'])}")
     L.append("")
