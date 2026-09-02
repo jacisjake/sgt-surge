@@ -11,6 +11,7 @@ Architecture:
 """
 
 import asyncio
+from pathlib import Path
 import logging
 import signal
 import sys
@@ -539,6 +540,20 @@ class TradingBot:
             candidates = []
 
         self._scanner_results = candidates
+
+        # Record first sighting of each candidate so forward returns can be
+        # measured later. Observational only — nothing here trades, and a
+        # failure must never break the scan loop.
+        try:
+            from src.lab.signal_log import append_hits
+
+            added = append_hits(
+                Path(self.config.state_dir) / "signal_log.json", candidates
+            )
+            if added:
+                logger.info(f"[SCAN] recorded {len(added)} new signal(s) to signal_log.json")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[SCAN] signal log skipped: {e}")
 
         if not candidates:
             logger.info("[SCAN] No candidates found")
