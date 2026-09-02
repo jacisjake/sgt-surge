@@ -137,7 +137,14 @@ class BotScheduler:
         # Broker state now handled by trade update stream (StreamHandler.on_trade_update)
 
         # ── 3. Safety net and EOD cleanup ────────────────────────────────
-        if self._end_of_day_callback:
+        # The ORB lifecycle only runs when ORB can actually trade. A strategy
+        # forbidden from opening a position has no business closing one: with
+        # ENABLE_ORB_LIVE already false, this job still closed 23 of 34
+        # positions in August 2026. Skipping the right positions is one
+        # classification bug away from failing; not scheduling it cannot.
+        _orb_live = bool(getattr(self.config, "enable_orb_live", False))
+
+        if self._end_of_day_callback and _orb_live:
 
             # ── 6. Safety net close-all: 3:55 PM ET ─────────────────────
             self.scheduler.add_job(
@@ -169,7 +176,7 @@ class BotScheduler:
             )
 
         # ── 8. OR-lock: 9:45:30 AM ET ────────────────────────────────────
-        if self._or_lock_callback:
+        if self._or_lock_callback and _orb_live:
             self.scheduler.add_job(
                 self._run_or_lock,
                 CronTrigger(
