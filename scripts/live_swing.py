@@ -129,6 +129,36 @@ def execute_plan(plan: list[dict], executor) -> list[dict]:
     return results
 
 
+def reconcile_audit_meta(position_meta, held_symbols, journal_path, today) -> list[dict]:
+    """Journal and drop meta for positions the broker no longer holds.
+
+    A position can leave the book without passing through this script's sell
+    branch — a manual close, the flatten script, or a missed run. Its meta
+    would otherwise sit in the audit forever and the trade would vanish from
+    the evidence base entirely. The exit price is not recoverable after the
+    fact, so it is recorded as null rather than guessed.
+    """
+    from src.lab.journal import append_closed_trade
+
+    held = {str(s).upper() for s in held_symbols}
+    dropped: list[dict] = []
+    for sym in [s for s in list(position_meta) if str(s).upper() not in held]:
+        meta = dict(position_meta.pop(sym) or {})
+        dropped.append(append_closed_trade(journal_path, {
+            "symbol": sym,
+            "entry_date": meta.get("entry_date"),
+            "exit_date": today.isoformat(),
+            "entry_price": meta.get("entry_price"),
+            "exit_price": None,
+            "qty": None,
+            "initial_stop": meta.get("initial_stop"),
+            "reason": "reconciled_unknown_exit",
+            "regime": meta.get("regime"),
+            "r_multiple": None,
+        }))
+    return dropped
+
+
 def record_closed_trades(results, position_meta, journal_path, today) -> list[dict]:
     """Journal every filled sell before its position meta is dropped. Pure I/O.
 
@@ -238,6 +268,18 @@ def _run(args) -> int:
     acct = client.get_account()
     equity, cash = float(acct["equity"]), float(acct["buying_power"])
     audit = load_audit(Path(args.audit_path)) if args.audit_path else {"position_meta": {}}
+
+    # A position can leave the book without passing through the sell branch
+    # below (manual close, flatten script, missed run). Journal those before
+    # their meta is lost, then drop them.
+    _meta = audit.setdefault("position_meta", {})
+    _held = {str(p.get("symbol") or "").upper() for p in positions}
+    _orphans = reconcile_audit_meta(_meta, _held, Path(args.journal_path), today)
+    if _orphans:
+        print(f"[RECONCILE] journalled and dropped {len(_orphans)} stale meta "
+              f"entries: {', '.join(o['symbol'] for o in _orphans)}")
+        if args.audit_path:
+            save_audit(Path(args.audit_path), audit)
 
     regime = None
     if spy is not None and not spy.empty:
