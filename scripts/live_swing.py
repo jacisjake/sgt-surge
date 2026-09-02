@@ -129,6 +129,31 @@ def execute_plan(plan: list[dict], executor) -> list[dict]:
     return results
 
 
+def check_live_gate(experiment_id, *, trading_mode, enable_orb_live,
+                    git_path="config/experiments.yaml",
+                    override_path="state/experiments/overrides.yaml"):
+    """Return None if the registry permits live orders, else the refusal reason.
+
+    live_swing places real fractional orders. Without this the promote gate is
+    decorative: a stage=research experiment with no backtest report would still
+    trade real money. Fails closed — an unreadable registry refuses.
+    """
+    from src.lab.registry import assert_can_run, load_registry
+
+    try:
+        reg = load_registry(git_path, override_path)
+    except (FileNotFoundError, ValueError, OSError) as e:
+        return f"registry unreadable: {e}"
+    if experiment_id not in reg:
+        return f"unknown experiment {experiment_id!r}"
+    try:
+        assert_can_run(reg, reg[experiment_id], "live", trading_mode,
+                       enable_orb_live=enable_orb_live)
+    except PermissionError as e:
+        return str(e)
+    return None
+
+
 def reconcile_audit_meta(position_meta, held_symbols, journal_path, today) -> list[dict]:
     """Journal and drop meta for positions the broker no longer holds.
 
@@ -328,6 +353,29 @@ def _run(args) -> int:
         print(f"\nRefusing --live: bot trading_mode is {cfg.trading_mode.value}, not live.")
         return 1
 
+    # The promote gate binds here or it binds nowhere — this is the only path
+    # that places real orders.
+    gate = check_live_gate(
+        args.experiment_id,
+        trading_mode=cfg.trading_mode.value,
+        enable_orb_live=bool(cfg.enable_orb_live),
+    )
+    if gate and not args.ignore_gate:
+        print(f"\nRefusing --live: promote gate says {gate}")
+        print("Promote the experiment, or pass --ignore-gate --gate-reason '...' "
+              "to override deliberately.")
+        return 1
+    if gate and args.ignore_gate:
+        if not args.gate_reason:
+            print("\nRefusing --live: --ignore-gate requires --gate-reason.")
+            return 1
+        print(f"\n[GATE OVERRIDE] {gate} — proceeding: {args.gate_reason}")
+        audit.setdefault("gate_overrides", []).append({
+            "at": today.isoformat(), "gate": gate, "reason": args.gate_reason,
+        })
+        if args.audit_path:
+            save_audit(Path(args.audit_path), audit)
+
     print("\nPLACING REAL FRACTIONAL ORDERS...")
     ex = OrderExecutor(client, trading_mode=TradingMode.LIVE)
     results = execute_plan(plan, ex)
@@ -372,6 +420,12 @@ def main(argv=None) -> int:
     ap.add_argument("--k2", type=float, default=3.0)
     ap.add_argument("--atr-period", type=int, default=14)
     ap.add_argument("--use-ma-exit", action="store_true")
+    ap.add_argument("--experiment-id", default="breakout_52w_live",
+                    help="registry id whose promote gate governs live orders")
+    ap.add_argument("--ignore-gate", action="store_true",
+                    help="place orders even if the promote gate refuses (recorded in audit)")
+    ap.add_argument("--gate-reason", default=None,
+                    help="required justification when --ignore-gate is used")
     ap.add_argument(
         "--journal-path",
         default="state/experiments/breakout_52w_live/journal.json",
