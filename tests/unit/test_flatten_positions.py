@@ -25,3 +25,53 @@ def test_flatten_plan_skips_zero_qty():
 
 def test_flatten_plan_empty_book_is_empty():
     assert flatten_plan([]) == []
+
+
+# ── journalling (added 2026-09-02) ─────────────────────────────────────────
+
+def test_flatten_journals_each_filled_sell(tmp_path):
+    """The flatten script is an exit path; its trades must not vanish."""
+    import datetime
+    import json as _json
+
+    from scripts.flatten_positions import journal_flatten_results
+
+    journal = tmp_path / "journal.json"
+    meta = {"ABC": {"entry_date": "2026-08-01", "entry_price": 10.0, "initial_stop": 9.0}}
+    results = [{"status": "submitted", "action": "sell", "symbol": "ABC",
+                "qty": 2.0, "price": 12.0}]
+    journal_flatten_results(results, meta, journal, datetime.date(2026, 9, 2))
+
+    rows = _json.loads(journal.read_text())
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "ABC"
+    assert rows[0]["reason"] == "flatten"
+    assert rows[0]["r_multiple"] == 2.0      # (12-10)/(10-9)
+
+
+def test_flatten_does_not_journal_a_rejected_sell(tmp_path):
+    import datetime
+
+    from scripts.flatten_positions import journal_flatten_results
+
+    journal = tmp_path / "journal.json"
+    results = [{"status": "rejected", "action": "sell", "symbol": "ABC",
+                "qty": 2.0, "price": 12.0, "error": "boom"}]
+    journal_flatten_results(results, {}, journal, datetime.date(2026, 9, 2))
+    assert not journal.exists()
+
+
+def test_flatten_journals_a_position_with_no_meta(tmp_path):
+    """Unknown initial stop must not silently discard the trade."""
+    import datetime
+    import json as _json
+
+    from scripts.flatten_positions import journal_flatten_results
+
+    journal = tmp_path / "journal.json"
+    results = [{"status": "submitted", "action": "sell", "symbol": "ZZZ",
+                "qty": 1.0, "price": 4.0}]
+    journal_flatten_results(results, {}, journal, datetime.date(2026, 9, 2))
+    rows = _json.loads(journal.read_text())
+    assert rows[0]["symbol"] == "ZZZ"
+    assert rows[0]["r_multiple"] is None

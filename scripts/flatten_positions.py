@@ -6,7 +6,9 @@ convex-breakout universe takes over.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "/app")
 
@@ -28,6 +30,18 @@ def flatten_plan(positions: list[dict]) -> list[dict]:
             "reason": "flatten",
         })
     return plan
+
+
+def journal_flatten_results(results, position_meta, journal_path, today) -> list[dict]:
+    """Record every filled flatten sell so the trade is not lost.
+
+    Flattening is an exit path like any other. Without this the position
+    leaves the book with no R-multiple, exit reason or regime on record.
+    """
+    from scripts.live_swing import record_closed_trades
+
+    tagged = [{**r, "reason": "flatten"} for r in results]
+    return record_closed_trades(tagged, position_meta, journal_path, today)
 
 
 def _run(args) -> int:
@@ -89,6 +103,22 @@ def _run(args) -> int:
         print(f"  {r['status'].upper():9} sell {r['qty']:.4f} {r['symbol']}{err}")
         if r.get("status") != "submitted":
             failed += 1
+    # Journal the exits and drop their meta, so a flattened position leaves a
+    # trade record instead of an orphaned audit entry.
+    from src.lab.runners.live import load_audit, save_audit
+
+    audit_path = Path(args.audit_path)
+    audit = load_audit(audit_path)
+    meta = audit.setdefault("position_meta", {})
+    today = dt.date.today()
+    journalled = journal_flatten_results(results, meta, Path(args.journal_path), today)
+    for r in results:
+        if r.get("status") == "submitted":
+            meta.pop(r["symbol"], None)
+    if journalled:
+        save_audit(audit_path, audit)
+        print(f"  journalled {len(journalled)} closed trade(s) -> {args.journal_path}")
+
     snapshot["preview"] = False
     snapshot["results"] = results
     write_json("state/flatten_last.json", snapshot)
@@ -100,6 +130,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--live", action="store_true",
                     help="PLACE REAL SELLS (default is preview only)")
+    ap.add_argument("--journal-path",
+                    default="state/experiments/breakout_52w_live/journal.json")
+    ap.add_argument("--audit-path",
+                    default="state/experiments/breakout_52w_live/live_audit.json")
     return _run(ap.parse_args(argv))
 
 
