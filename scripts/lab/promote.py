@@ -12,8 +12,8 @@ def main(argv=None) -> int:
     p.add_argument("experiment_id", help="Experiment id")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true", help="Run soft/hard checks; write promote_check.json")
-    g.add_argument("--to", choices=["paper", "live"], help="Promote to stage")
-    g.add_argument("--demote", choices=["paper", "research"], help="Demote to stage")
+    g.add_argument("--to", choices=["live"], help="Promote to stage")
+    g.add_argument("--demote", choices=["research"], help="Demote to stage")
     p.add_argument("--force", action="store_true")
     p.add_argument("--reason", default=None)
     p.add_argument("--backtest-report", default=None)
@@ -23,12 +23,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     from src.bot.config import get_bot_config
-    from src.lab.promote import (
-        check_promotion,
-        demote,
-        promote_to_live,
-        promote_to_paper,
-    )
+    from src.lab.promote import check_promotion, demote, promote_to_live
     from src.lab.registry import load_registry
 
     reg = load_registry(args.config, args.overrides)
@@ -38,25 +33,12 @@ def main(argv=None) -> int:
     exp = reg[args.experiment_id]
 
     if args.check:
-        result = check_promotion(exp)
+        result = check_promotion(exp, backtest_report=args.backtest_report)
         out = Path(f"state/experiments/{exp.id}/promote_check.json")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 2
-
-    if args.to == "paper":
-        result = promote_to_paper(
-            exp.id,
-            git_path=args.config,
-            override_path=args.overrides,
-            backtest_report=args.backtest_report,
-            force=args.force,
-            reason=args.reason,
-            by=args.by,
-        )
-        print(json.dumps(result, indent=2, default=str))
-        return 0
 
     if args.to == "live":
         cfg = get_bot_config()

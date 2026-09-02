@@ -2,8 +2,8 @@
 
 > **DISCLAIMER: This project is for educational and research purposes only. It is not financial advice. Trading stocks involves substantial risk of loss. Past performance is not indicative of future results. You could lose some or all of your invested capital. Do not trade with money you cannot afford to lose. By using this software, you acknowledge that you are solely responsible for your own trading decisions and any resulting financial outcomes.**
 
-Trading lab for Charles Schwab: run strategy experiments on paper and (gated) real
-money. Built for small cash accounts with aggressive risk controls.
+Trading lab for Charles Schwab: backtest strategy experiments and promote them to
+(gated) real money. Built for small cash accounts with aggressive risk controls.
 
 ## What this system is
 
@@ -11,14 +11,17 @@ money. Built for small cash accounts with aggressive risk controls.
 
 | Experiment | Mode | Notes |
 |---|---|---|
-| `breakout_52w_paper` | paper (cron) | Bake-off winner (+55% research backtest); forward-tested daily |
-| `breakout_52w_live` | live after promote | Same edge; LiveRunner preview by default |
-| `short_term_reversal_research` | research | Promote to paper after backtest report |
+| `breakout_52w_live` | research → live after promote | Bake-off winner (+55% research backtest); LiveRunner preview by default |
+| `short_term_reversal_research` | research | Promote to live after a backtest report clears the gates |
 
-- Paper engine: SimFill day-step (same formulas as the former paper_forward tester)
-- Promote: `python -m scripts.lab.promote --check|--to paper|live`
-- Scoreboard: `python -m scripts.lab.scoreboard --id breakout_52w_paper`
-- Cron: `run_paper_forward.sh` → lab PaperRunner for `breakout_52w_paper`
+There is **one** execution system. Stages are `research → live`; `dry_run` gives
+simulated fills at any stage.
+
+- Backtest engine: SimFill day-step (`src/lab/runners/backtest.py`)
+- Promote: `python -m scripts.lab.promote <id> --check|--to live` (gate reads the backtest report)
+- Scoreboard: `python -m scripts.lab.scoreboard --id breakout_52w_live`
+- Skew report: `python -m scripts.lab.journal_report --id breakout_52w_live` — payoff ratio, max winner in R, top-3 share, expectancy by regime
+- Parameter sweep: `python -m scripts.lab.sweep_convex --fetch` — k1×k2 grid over the low-price universe; bars are cached once and replayed per cell
 - Design: [`docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md`](docs/superpowers/specs/2026-07-22-trading-lab-v1-design.md)
 - Bake-off: [`docs/superpowers/results/2026-06-11-strategy-bakeoff.md`](docs/superpowers/results/2026-06-11-strategy-bakeoff.md)
 
@@ -110,7 +113,7 @@ sgt-schwab/
 │   │   ├── tradingview_screener.py  # TradingView API integration
 │   │   ├── stream_handler.py    # 1-min -> 5-min bar aggregation
 │   │   ├── monitor.py           # Position monitoring and P&L
-│   │   ├── comparison.py        # Live-vs-paper strategy stats (/api/compare)
+│   │   ├── comparison.py        # ORB edge stats (/api/compare)
 │   │   ├── float_provider.py    # Float data from FMP API
 │   │   ├── signals/             # Signal generation strategies
 │   │   │   ├── base.py          # Abstract signal base class
@@ -135,12 +138,11 @@ sgt-schwab/
 │   ├── healthcheck.sh           # Remote health monitoring
 │   ├── smoke_schwab.py          # Schwab auth/connectivity smoke test
 │   ├── backtest_orb.py          # Legacy ORB research backtest
-│   └── research/                # Strategy bake-off + swing paper-forward harness
+│   └── research/                # Strategy bake-off harness
 ├── deploy/
 │   ├── podman-compose.yml       # Container orchestration
 │   └── deploy-remote.sh         # Remote deployment script
 ├── docs/superpowers/            # Plans, specs, bake-off results, lab design
-├── run_paper_forward.sh         # Daily breakout_52w paper forward-tester (cron)
 ├── tests/
 │   └── unit/                    # Unit tests
 ├── state/                       # Runtime state (not tracked)
@@ -176,7 +178,7 @@ Operator checklist for server cutover:
 1. Set server `.env` to `TRADING_MODE=dry_run` (leave `ENABLE_ORB_LIVE` false/unset).
 2. Restart only the `sgt-schwab-bot` container.
 3. Verify `/api/status` reports `"trading_mode":"dry_run"`. Healthcheck `"mode":"running"` means authenticated, **not** that ORB is trading live.
-4. Keep Schwab token refresh and the `run_paper_forward.sh` weekday paper cron.
+4. Keep the Schwab token refresh cron.
 5. Only set `ENABLE_ORB_LIVE=true` if intentionally re-enabling ORB live money.
 
 ### Risk Management
@@ -297,8 +299,8 @@ Legacy ORB research backtest:
 python scripts/backtest_orb.py
 ```
 
-The broader strategy bake-off (structurally different edges, OOS/regime kill-tests,
-swing paper-forward) lives under `scripts/research/`; see
+The broader strategy bake-off (structurally different edges, OOS/regime kill-tests)
+lives under `scripts/research/`; see
 `docs/superpowers/results/2026-06-11-strategy-bakeoff.md` for findings.
 
 ## Architecture

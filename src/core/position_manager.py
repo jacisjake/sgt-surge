@@ -13,6 +13,12 @@ from typing import Optional
 from loguru import logger
 
 
+# Positions discovered at the broker that this bot did not open itself
+# (e.g. swing lots placed by scripts/live_swing.py). Tracked for P&L and
+# risk, but never touched by ORB intraday machinery.
+EXTERNAL_STRATEGY = "external"
+
+
 class PositionSide(str, Enum):
     LONG = "long"
     SHORT = "short"
@@ -299,9 +305,12 @@ class PositionManager:
                     entry_time=datetime.now(),  # Unknown actual entry time
                     current_price=bp["current_price"],
                 )
-                pos.strategy = "momentum_surge"
+                pos.strategy = EXTERNAL_STRATEGY
                 self.positions[symbol] = pos
-                logger.info(f"Synced existing position: {symbol} (strategy=momentum_surge)")
+                logger.info(
+                    f"Synced existing position: {symbol} "
+                    f"(strategy={EXTERNAL_STRATEGY}, not ORB-owned)"
+                )
             else:
                 # Update existing position
                 self.positions[symbol].update_price(bp["current_price"])

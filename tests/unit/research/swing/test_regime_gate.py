@@ -7,7 +7,10 @@ import datetime
 
 import pandas as pd
 
-from scripts.research.swing.paper_forward import new_state, step
+from src.lab.fills.sim import apply_intents
+from src.lab.ledger import new_state, portfolio_from_state
+from src.lab.protocol import MarketContext
+from src.lab.strategies import get_strategy
 from scripts.research.swing.strategies import breakout_52w_trades, build_risk_on
 
 
@@ -100,7 +103,7 @@ def test_missing_date_in_map_is_treated_as_risk_off():
     assert trades == []
 
 
-# ── step() gating ────────────────────────────────────────────────────────
+# ── lab day-step gating ─────────────────────────────────────────────────
 
 BREAKOUT_DAY = datetime.date(2024, 1, 10)   # index 9
 
@@ -119,29 +122,52 @@ def _bars_for_step():
     return {"AAA": df}
 
 
+def _step(state, bars, session, *, risk_on=None, lookback=5, ma_exit=3,
+          stop_pct=0.08, slip_bps=15.0):
+    """One lab day-step: plan then SimFill, mirroring the runners."""
+    sliced = {
+        sym: df[df.index.map(lambda ts: ts.date() <= session)]
+        for sym, df in bars.items()
+    }
+    sliced = {s: d for s, d in sliced.items() if not d.empty}
+    params = {
+        "lookback": lookback,
+        "ma_exit": ma_exit,
+        "stop_pct": stop_pct,
+        "risk_pct": 0.01,
+        "slip_bps": slip_bps,
+        "use_regime_gate": risk_on is not None,
+    }
+    if risk_on is not None:
+        params["risk_on_override"] = risk_on
+    portfolio = portfolio_from_state(state, session)
+    market = MarketContext(bars_by_symbol=sliced, extras={}, now=session)
+    intents = get_strategy("breakout_52w").plan(portfolio, market, params)
+    return apply_intents(state, intents, market, stop_pct=stop_pct,
+                         slip_bps=slip_bps, snapshot_equity=True)
+
+
 def test_step_takes_entry_when_risk_on():
-    st = step(new_state(200.0), _bars_for_step(), BREAKOUT_DAY,
-              lookback=5, ma_exit=3, risk_on=True)
+    st = _step(new_state(starting_equity=200.0), _bars_for_step(), BREAKOUT_DAY,
+               risk_on=True)
     assert len(st["open_positions"]) == 1
 
 
 def test_step_skips_entry_when_risk_off():
-    st = step(new_state(200.0), _bars_for_step(), BREAKOUT_DAY,
-              lookback=5, ma_exit=3, risk_on=False)
+    st = _step(new_state(starting_equity=200.0), _bars_for_step(), BREAKOUT_DAY,
+               risk_on=False)
     assert st["open_positions"] == []
 
 
 def test_step_ungated_by_default():
-    st = step(new_state(200.0), _bars_for_step(), BREAKOUT_DAY,
-              lookback=5, ma_exit=3)
+    st = _step(new_state(starting_equity=200.0), _bars_for_step(), BREAKOUT_DAY)
     assert len(st["open_positions"]) == 1
 
 
 def test_risk_off_still_processes_exits():
     """A risk-off day must NOT trap an open position — exits always run."""
     bars = _bars_for_step()
-    st = step(new_state(200.0), bars, BREAKOUT_DAY,
-              lookback=5, ma_exit=3, risk_on=True)
+    st = _step(new_state(starting_equity=200.0), bars, BREAKOUT_DAY, risk_on=True)
     assert len(st["open_positions"]) == 1
 
     # next day gaps below the stop, on a RISK-OFF day
@@ -151,8 +177,7 @@ def test_risk_off_still_processes_exits():
     )
     bars["AAA"] = pd.concat([bars["AAA"], nxt])
 
-    st = step(st, bars, datetime.date(2024, 1, 11),
-              lookback=5, ma_exit=3, risk_on=False)
+    st = _step(st, bars, datetime.date(2024, 1, 11), risk_on=False)
     assert st["open_positions"] == []          # exited, not trapped
     assert len(st["closed_trades"]) == 1
-    assert st["closed_trades"][0]["reason"] == "stop"
+    assert st["closed_trades"][0]["reason"] == "gap_stop"

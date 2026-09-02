@@ -5,11 +5,39 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from src.lab.ledger import load_state, realized_equity
-from src.lab.metrics.gates import expectancy_per_trade, max_drawdown_realized
 from src.lab.registry import Experiment, resolve_ledger_path
 
 
 NORTH_STAR_DAILY = 0.01
+
+
+def max_drawdown_realized(state: dict) -> float:
+    """Peak-to-trough drawdown on realized equity path (0..1)."""
+    start = float(state.get("starting_equity", 0.0))
+    curve = state.get("equity_curve_daily") or []
+    if curve:
+        equities = [float(r["equity_realized"]) for r in curve]
+    else:
+        # Fall back: starting + cumulative closed trade pnl path
+        equities = [start]
+        eq = start
+        for t in state.get("closed_trades") or []:
+            eq += float(t.get("pnl", 0.0))
+            equities.append(eq)
+    peak = equities[0] if equities else start
+    max_dd = 0.0
+    for e in equities:
+        peak = max(peak, e)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - e) / peak)
+    return max_dd
+
+
+def expectancy_per_trade(state: dict) -> float | None:
+    trades = state.get("closed_trades") or []
+    if not trades:
+        return None
+    return sum(float(t.get("pnl", 0.0)) for t in trades) / len(trades)
 
 
 def rolling_mean_daily_return(state: dict, window: int = 20) -> Optional[float]:
@@ -27,7 +55,7 @@ def scoreboard(
     north_star: float = NORTH_STAR_DAILY,
     rolling_window: int = 20,
 ) -> dict[str, Any]:
-    """North-star tracking metrics from a paper ledger."""
+    """North-star tracking metrics from an experiment ledger."""
     start = float(state.get("starting_equity", 0.0) or 0.0)
     eq = realized_equity(state)
     total_return = (eq / start - 1.0) if start else 0.0

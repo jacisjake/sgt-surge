@@ -1,4 +1,4 @@
-"""Paper ledger helpers and PositionView adapters."""
+"""Experiment ledger helpers and PositionView adapters."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from src.lab.protocol import PositionView, PortfolioView
 
 
 def new_state(starting_equity: float = 200.0) -> dict:
-    """Blank paper ledger (backward compatible with paper_forward)."""
+    """Blank experiment ledger."""
     return {
         "starting_equity": starting_equity,
         "available_cash": starting_equity,
@@ -44,7 +44,7 @@ def realized_equity(state: dict) -> float:
     return float(state["starting_equity"]) + float(state["realized_pnl"])
 
 
-def paper_positions_to_views(open_positions: list[dict]) -> list[PositionView]:
+def positions_to_views(open_positions: list[dict]) -> list[PositionView]:
     views: list[PositionView] = []
     for pos in open_positions:
         entry = float(pos["entry_price"])
@@ -64,12 +64,12 @@ def paper_positions_to_views(open_positions: list[dict]) -> list[PositionView]:
     return views
 
 
-def portfolio_from_paper(state: dict, as_of: date) -> PortfolioView:
+def portfolio_from_state(state: dict, as_of: date) -> PortfolioView:
     return PortfolioView(
         as_of=as_of,
         equity=realized_equity(state),
         available_cash=float(state["available_cash"]),
-        positions=paper_positions_to_views(state.get("open_positions") or []),
+        positions=positions_to_views(state.get("open_positions") or []),
     )
 
 

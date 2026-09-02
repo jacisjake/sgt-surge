@@ -1,5 +1,13 @@
 """Screening predicate for the lab universe (price band + liquidity + history)."""
-from src.lab.universe import DEFAULT_PARAMS, median_dollar_volume, qualifies, screen
+from src.lab.universe import (
+    DEFAULT_PARAMS,
+    median_dollar_volume,
+    parse_symbols,
+    qualifies,
+    screen,
+    union_symbol_lists,
+)
+
 
 
 def _row(symbol="AAA", last_close=12.0, median_dollar_vol=20_000_000.0, n_bars=300):
@@ -60,3 +68,40 @@ def test_price_ceiling_default_allows_a_whole_share_at_current_sizing():
     """Sizing is ~$24/position (risk_pct*equity/stop_frac); the ceiling must fit
     inside that or every fill is fractional again."""
     assert DEFAULT_PARAMS["price_max"] <= 25.0
+
+
+def test_fractional_ok_name_clears_price_ceiling():
+    row = _row(symbol="NVDA", last_close=180.0)
+    assert qualifies(row, DEFAULT_PARAMS) is True
+
+
+def test_fractional_ok_name_still_needs_liquidity_and_history():
+    thin = _row(symbol="MU", last_close=180.0, median_dollar_vol=1.0)
+    short = _row(symbol="NVDA", last_close=180.0, n_bars=10)
+    assert qualifies(thin, DEFAULT_PARAMS) is False
+    assert qualifies(short, DEFAULT_PARAMS) is False
+
+
+def test_non_allowlisted_mega_cap_still_rejected_above_ceiling():
+    assert qualifies(_row(symbol="JPM", last_close=348.0), DEFAULT_PARAMS) is False
+
+
+def test_screen_includes_fractional_ok_names():
+    cheap = _row(symbol="AAA")
+    nvda = _row(symbol="NVDA", last_close=180.0)
+    jpm = _row(symbol="JPM", last_close=348.0)
+    assert screen([cheap, nvda, jpm], DEFAULT_PARAMS) == ["AAA", "NVDA"]
+
+
+def test_parse_symbols_splits_and_dedupes():
+    assert parse_symbols("nvda MU\nAMAT amat") == ["AMAT", "MU", "NVDA"]
+
+
+def test_union_keeps_cheap_screen_and_overlay():
+    cheap = ["AAL", "AES", "F"]
+    overlay = ["NVDA", "MU", "AMAT"]
+    merged = union_symbol_lists(cheap, overlay)
+    assert "AAL" in merged and "NVDA" in merged and "AMAT" in merged
+    assert merged == sorted(set(cheap) | set(overlay))
+
+

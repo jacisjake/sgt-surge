@@ -1,4 +1,4 @@
-"""SimFill — pin formulas to paper_forward.step (raw prices, ratio PnL)."""
+"""SimFill — simulated fills (raw prices, ratio PnL)."""
 from __future__ import annotations
 
 from datetime import date
@@ -21,9 +21,9 @@ def apply_intents(
     min_notional: float = 1.0,
     snapshot_equity: bool = True,
 ) -> dict:
-    """Apply ordered intents to paper ledger. Mutates and returns *state*.
+    """Apply ordered intents to an experiment ledger. Mutates and returns *state*.
 
-    Exact slip / PnL model from paper_forward.step:
+    Slip / PnL model:
       slip = 2 * slip_bps / 10_000
       pnl = notional * ((exit*(1-slip))/(entry*(1+slip)) - 1)
     """
@@ -57,17 +57,19 @@ def apply_intents(
             opens = df["open"].to_numpy()
             closes = df["close"].to_numpy()
 
-            if intent.reason == "stop":
-                exit_price = stop_fill_price(stop_price, float(opens[i]))
+            if intent.reason in ("stop", "gap_stop", "trail"):
+                fill_stop = float(intent.stop_price or stop_price)
+                exit_price = stop_fill_price(fill_stop, float(opens[i]))
             elif intent.reason == "target" and intent.target_price is not None:
                 exit_price = float(intent.target_price)
             else:
-                # trend_break / time → raw close (or metadata override)
                 exit_price = float(intent.metadata.get("exit_price", closes[i]))
 
             pnl = notional * ((exit_price * (1 - slip)) / (entry_price * (1 + slip)) - 1)
             state["realized_pnl"] += pnl
             state["available_cash"] += notional + pnl
+            risk = entry_price - stop_price
+            r_mult = ((exit_price - entry_price) / risk) if risk else 0.0
             state["closed_trades"].append(
                 {
                     "symbol": intent.symbol,
@@ -77,6 +79,9 @@ def apply_intents(
                     "exit_price": exit_price,
                     "pnl": pnl,
                     "reason": intent.reason,
+                    "r_multiple": r_mult,
+                    "initial_stop": stop_price,
+                    "regime": (pos.get("metadata") or {}).get("regime"),
                 }
             )
             del open_by_sym[intent.symbol]

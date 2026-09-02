@@ -6,7 +6,7 @@ import datetime
 import pandas as pd
 
 from src.lab.fills.sim import apply_intents
-from src.lab.ledger import new_state, portfolio_from_paper
+from src.lab.ledger import new_state, portfolio_from_state
 from src.lab.protocol import MarketContext, PortfolioView, PositionView, Side
 from src.lab.strategies.short_term_reversal import (
     ShortTermReversalStrategy,
@@ -101,7 +101,7 @@ def test_simfill_target_pnl_uses_ratio_not_trade_list():
         },
         index=_days(3, start="2024-01-01"),
     )
-    portfolio = portfolio_from_paper(state, as_of)
+    portfolio = portfolio_from_state(state, as_of)
     market = MarketContext(bars_by_symbol={"AAA": df}, now=as_of)
     intents = ShortTermReversalStrategy().plan(
         portfolio, market, {"hold": 5, "stop_pct": 0.05, "target_pct": 0.10}

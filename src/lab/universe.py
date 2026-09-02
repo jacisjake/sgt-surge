@@ -27,6 +27,11 @@ DEFAULT_PARAMS: dict[str, float] = {
     "min_bars": 280,  # 252 lookback + slack for holidays / partial history
 }
 
+# Names the operator accepts as fractional fills. Price ceiling is waived;
+# liquidity and history floors still apply.
+FRACTIONAL_OK: frozenset[str] = frozenset({"NVDA", "MU"})
+
+
 
 def median_dollar_volume(
     closes: Sequence[float], volumes: Sequence[float]
@@ -42,15 +47,19 @@ def qualifies(row: dict[str, Any], params: dict[str, float]) -> bool:
     """True when a candidate clears the price band, liquidity and history floors.
 
     ``row`` carries ``last_close``, ``median_dollar_vol`` and ``n_bars``.
+    Symbols in ``FRACTIONAL_OK`` skip the price band only.
     """
+    symbol = str(row.get("symbol") or "").upper()
     last_close = float(row.get("last_close") or 0.0)
-    if not (params["price_min"] <= last_close <= params["price_max"]):
+    in_band = params["price_min"] <= last_close <= params["price_max"]
+    if not in_band and symbol not in FRACTIONAL_OK:
         return False
     if float(row.get("median_dollar_vol") or 0.0) < params["min_dollar_vol"]:
         return False
     if int(row.get("n_bars") or 0) < params["min_bars"]:
         return False
     return True
+
 
 
 def screen(rows: list[dict[str, Any]], params: dict[str, float]) -> list[str]:
@@ -60,3 +69,20 @@ def screen(rows: list[dict[str, Any]], params: dict[str, float]) -> list[str]:
         for r in rows
         if r.get("symbol") and qualifies(r, params)
     })
+
+
+def parse_symbols(text: str) -> list[str]:
+    """Split a universe file body into sorted unique tickers."""
+    return sorted({tok.strip().upper() for tok in text.split() if tok.strip()})
+
+
+def union_symbol_lists(*groups: Sequence[str]) -> list[str]:
+    """Sorted unique union. Price is not a filter — callers decide membership."""
+    out: set[str] = set()
+    for group in groups:
+        for tok in group:
+            s = str(tok).strip().upper()
+            if s:
+                out.add(s)
+    return sorted(out)
+

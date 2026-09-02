@@ -42,625 +42,10 @@ def set_bot(bot) -> None:
     _bot = bot
 
 
-_DASHBOARD_HTML = """\
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>sgt-schwab — Trading Lab</title>
-  <style>
-    /* Design tokens — see DESIGN.md (Fintech Design System, paper/charcoal). */
-    :root {
-      --paper: #F6F5ED; --surface: #FFFFFF; --secondary: #EBEAE4; --border: #D5D4CD;
-      --charcoal: #2C2C2A; --text: #444444; --text-sub: #4A4A4A; --text-muted: #6B6A64;
-      --accent: #8BB8A8;
-      --ok-bg: #B9FBC0; --ok-fg: #0B4019;
-      --err-bg: #FECACA; --err-fg: #7F1D1D;
-      --warn-bg: #F2E4C9; --warn-fg: #8A6A1F;
-      --r-md: 6px; --r-card: 12px; --r-pill: 9999px;
-      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      --font-serif: ui-serif, Georgia, 'Times New Roman', Times, serif;
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
-    }
-    * { box-sizing: border-box; }
-    body { font-family: var(--font-sans); font-weight: 500; line-height: 1.6;
-           background: var(--paper); color: var(--text); margin: 0; padding: 40px 24px;
-           -webkit-font-smoothing: antialiased; }
-    ::selection { background: var(--secondary); }
-    .wrap { max-width: 64rem; margin: 0 auto; }
-    /* masthead + document header */
-    .masthead { display: flex; align-items: center; justify-content: space-between;
-                gap: 12px; flex-wrap: wrap; margin-bottom: 40px; }
-    .brand { display: inline-flex; align-items: center; padding: 6px 18px; background: var(--surface);
-             border: 1px solid var(--border); border-radius: var(--r-pill);
-             font-family: var(--font-serif); font-size: 15px; letter-spacing: -0.01em;
-             color: var(--charcoal); }
-    .brand em { font-style: italic; }
-    h1 { font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.02em;
-         font-size: clamp(30px, 5vw, 52px); line-height: 1.05; color: var(--charcoal); margin: 0 0 12px; }
-    h1 em { font-style: italic; }
-    .lead { font-size: 15px; color: var(--text-sub); margin: 0 0 40px; max-width: 62ch; }
-    /* sections — hierarchy comes from whitespace + hairline rules, not cards.
-       Bordered containers are reserved for data tables (see DESIGN.md). */
-    .panel { margin-bottom: 44px; }
-    .panel + .panel { border-top: 1px solid var(--border); padding-top: 30px; }
-    .panel h2 { font-family: var(--font-mono); font-size: 11px; font-weight: 600;
-                text-transform: uppercase; letter-spacing: 0.14em; color: var(--charcoal); margin: 0 0 14px; }
-    .note { font-family: var(--font-sans); text-transform: none; letter-spacing: 0;
-            font-weight: 500; font-size: 12px; color: var(--text-muted); margin-left: 8px; }
-    .field { display: inline-block; margin-right: 26px; }
-    .label { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
-             letter-spacing: 0.1em; color: var(--text-muted); margin-right: 6px; }
-    .metric { font-family: var(--font-mono); font-size: 15px; color: var(--charcoal); }
-    /* tables — bordered container, monospace headers */
-    table { width: 100%; border-collapse: separate; border-spacing: 0;
-            border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
-    th { font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase;
-         letter-spacing: 0.1em; color: var(--text-sub); background: var(--secondary);
-         text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
-    td { font-size: 13px; padding: 9px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
-    tbody tr:last-child td { border-bottom: none; }
-    tbody tr { transition: background-color 120ms ease; }
-    tr.clickable { cursor: pointer; }
-    tr.clickable:hover td { background: var(--secondary); }
-    /* right-aligned numeric columns (DESIGN.md: right-aligned numeric data) */
-    #pos-table th:nth-child(n+2), #pos-table td:nth-child(n+2),
-    #orders-table th:nth-child(2), #orders-table td:nth-child(2),
-    #orders-table th:nth-child(5), #orders-table td:nth-child(5),
-    #paper-open th:nth-child(n+3), #paper-open td:nth-child(n+3),
-    #paper-closed th:nth-child(3), #paper-closed td:nth-child(3) { text-align: right; }
-    #pos-table td:nth-child(n+2),
-    #orders-table td:nth-child(2), #orders-table td:nth-child(5),
-    #paper-open td:nth-child(n+3),
-    #paper-closed td:nth-child(3) { font-family: var(--font-mono); font-size: 12px; }
-    /* status + badges */
-    .ok { color: var(--ok-fg); }
-    .warn { color: var(--warn-fg); }
-    .err { color: var(--err-fg); }
-    .muted { color: var(--text-muted); }
-    .badge { display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-             text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 10px;
-             border-radius: var(--r-pill); border: 1px solid var(--border);
-             background: var(--secondary); color: var(--text-sub); margin-left: 6px; }
-    .badge.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: transparent; }
-    .badge.warn { background: var(--warn-bg); color: var(--warn-fg); border-color: transparent; }
-    .badge.err { background: var(--err-bg); color: var(--err-fg); border-color: transparent; }
-    .badge.muted { background: var(--secondary); color: var(--text-muted); border-color: var(--border); }
-    /* controls */
-    button { font-family: var(--font-sans); font-weight: 500; font-size: 13px;
-             background: var(--charcoal); color: #fff; border: 1px solid var(--charcoal);
-             padding: 8px 16px; border-radius: var(--r-md); cursor: pointer;
-             transition: background-color 120ms ease, color 120ms ease; }
-    button:hover { background: #000; border-color: #000; }
-    button.ghost { background: transparent; color: var(--charcoal); border-color: var(--border); }
-    button.ghost:hover { background: var(--surface); }
-    :focus-visible { outline: 2px solid var(--charcoal); outline-offset: 2px; }
-    .spark { display: block; }
-    /* modal */
-    .overlay { position: fixed; inset: 0; background: rgba(44,44,42,0.45); display: none;
-               align-items: center; justify-content: center; z-index: 50; }
-    .overlay.open { display: flex; }
-    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card);
-             padding: 20px; width: 660px; max-width: calc(100vw - 32px);
-             box-shadow: 0 20px 40px -10px rgba(0,0,0,0.4); }
-    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-    .modal-title { font-family: var(--font-serif); font-size: 19px; color: var(--charcoal); }
-    .modal-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-left: 10px; }
-    .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md);
-              overflow: hidden; margin-right: 8px; }
-    .toggle button { background: var(--surface); color: var(--text-sub); border: none;
-                     border-radius: 0; padding: 5px 12px; font-size: 11px;
-                     font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
-    .toggle button.active { background: var(--charcoal); color: #fff; }
-    .close-x { background: none; border: none; color: var(--text-muted); padding: 4px 8px; font-size: 18px; }
-    .close-x:hover { background: none; color: var(--charcoal); }
-    .cols { display: flex; gap: 32px; flex-wrap: wrap; }
-    .col { flex: 1; min-width: 280px; }
-    @media (max-width: 640px) { body { padding: 24px 16px; } .panel { padding: 16px; } }
-    @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-  <header class="masthead">
-    <span class="brand">sgt-<em>schwab</em></span>
-    <div>
-      <span id="hdr-trading" class="badge muted">—</span>
-      <span id="hdr-orb" class="badge muted">ORB money —</span>
-    </div>
-  </header>
-
-  <h1>Trading <em>Lab</em></h1>
-  <p class="lead">Live broker state, the breakout_52w paper experiment, and today's
-     market conditions in one view.</p>
-
-  <div class="panel">
-    <h2>Status</h2>
-    <span class="field"><span class="label">Auth</span><span id="auth"></span></span>
-    <span class="field"><span class="label">Process</span><span id="mode"></span></span>
-    <span class="field"><span class="label">Trading mode</span><span id="trading-mode">—</span></span>
-    <span class="field"><span class="label">Token</span><span id="token">—</span></span>
-    <button id="oauth-btn" class="ghost" style="display:none">Authorize Schwab</button>
-  </div>
-
-  <div class="panel">
-    <h2>Account</h2>
-    <div id="account"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Today's tape
-      <span class="note">&mdash; conditions + study plays (not auto-trades)</span>
-      <span id="edu-meta" class="note"></span></h2>
-    <div id="edu-summary" style="margin-bottom:8px;font-size:13px"></div>
-    <div id="edu-tags" style="margin-bottom:8px;font-size:12px"></div>
-    <div id="edu-plays" style="font-size:12px"></div>
-    <div id="edu-actions" class="muted" style="margin-top:8px;font-size:11px"></div>
-  </div>
-
-  <div class="panel">
-    <h2>Broker positions
-      <span class="note">&mdash; real Schwab account (may be flat)</span>
-      <span id="pos-total" class="note"></span></h2>
-    <table id="pos-table"><thead><tr>
-      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Now</th><th>Value</th><th>P&amp;L</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2>Open orders
-      <span class="note">&mdash; broker open/pending (market orders may wait for open)</span></h2>
-    <table id="orders-table"><thead><tr>
-      <th>Symbol</th><th>Qty</th><th>Type</th><th>Status</th><th>Filled</th><th>Submitted</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="panel">
-    <h2>Lab paper — breakout_52w
-      <span class="note">(experiment breakout_52w_paper · SimFill)</span>
-      <span id="paper-meta" class="note"></span></h2>
-    <div id="paper-summary" style="margin-bottom:8px;font-size:13px"></div>
-    <div id="paper-scoreboard" class="muted" style="margin-bottom:10px;font-size:12px"></div>
-    <div class="cols">
-      <div class="col">
-        <div class="label" style="margin-bottom:6px;display:block">Open positions</div>
-        <table id="paper-open"><thead><tr>
-          <th>Symbol</th><th>Entry date</th><th>Entry</th><th>Stop</th><th>Notional</th>
-        </tr></thead><tbody></tbody></table>
-      </div>
-      <div class="col">
-        <div class="label" style="margin-bottom:6px;display:block">Recent closed</div>
-        <table id="paper-closed"><thead><tr>
-          <th>Symbol</th><th>Held</th><th>P&amp;L</th><th>Reason</th>
-        </tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-  </div>
-
-  </div><!-- /.wrap -->
-
-  <div id="overlay" class="overlay">
-    <div class="modal">
-      <div class="modal-head">
-        <div>
-          <span id="m-title" class="modal-title"></span>
-          <span id="m-sub" class="modal-sub"></span>
-        </div>
-        <div>
-          <span class="toggle">
-            <button id="t-line" class="active">Line</button>
-            <button id="t-candles">Candles</button>
-          </span>
-          <button id="m-close" class="close-x">&times;</button>
-        </div>
-      </div>
-      <div id="m-chart"></div>
-    </div>
-  </div>
-
-<script>
-const SVGNS = 'http://www.w3.org/2000/svg';
-function svgEl(name, attrs) {
-  const el = document.createElementNS(SVGNS, name);
-  for (const k in attrs) el.setAttribute(k, attrs[k]);
-  return el;
-}
-function setText(id, value, cls) {
-  const el = document.getElementById(id);
-  el.textContent = value;
-  if (cls !== undefined) el.className = cls;
-}
-
-function makeCell(c) {
-  const td = document.createElement('td');
-  if (c.node) td.appendChild(c.node);
-  else td.textContent = c.text;
-  if (c.cls) td.className = c.cls;
-  return td;
-}
-
-function renderTable(tbodySelector, rows) {
-  const tbody = document.querySelector(tbodySelector);
-  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-  for (const row of rows) {
-    const cells = row.cells || row;
-    const tr = document.createElement('tr');
-    for (const c of cells) tr.appendChild(makeCell(c));
-    if (row.onClick) {
-      tr.className = 'clickable';
-      tr.addEventListener('click', row.onClick);
-    }
-    tbody.appendChild(tr);
-  }
-}
-
-function sparkline(closes, orHigh, orLow) {
-  const w = 120, h = 28;
-  const svg = svgEl('svg', {width: w, height: h, class: 'spark', viewBox: '0 0 ' + w + ' ' + h});
-  if (!closes || closes.length < 2) {
-    const t = svgEl('text', {x: 2, y: h - 9, fill: '#6B6A64', 'font-size': 11});
-    t.textContent = '—';
-    svg.appendChild(t);
-    return svg;
-  }
-  let lo = Math.min.apply(null, closes), hi = Math.max.apply(null, closes);
-  if (orHigh != null) hi = Math.max(hi, orHigh);
-  if (orLow != null) lo = Math.min(lo, orLow);
-  const pad = 3, span = (hi - lo) || 1;
-  const x = i => pad + i * (w - 2 * pad) / (closes.length - 1);
-  const y = v => pad + (hi - v) * (h - 2 * pad) / span;
-  if (orHigh != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orHigh), y2: y(orHigh),
-      stroke: '#8A6A1F', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.6}));
-  if (orLow != null) svg.appendChild(svgEl('line', {x1: 0, x2: w, y1: y(orLow), y2: y(orLow),
-      stroke: '#6B6A64', 'stroke-width': 0.5, 'stroke-dasharray': '2 2', opacity: 0.4}));
-  const up = closes[closes.length - 1] >= closes[0];
-  svg.appendChild(svgEl('polyline', {points: closes.map((c, i) => x(i) + ',' + y(c)).join(' '),
-      fill: 'none', stroke: up ? '#0B4019' : '#7F1D1D', 'stroke-width': 1.2}));
-  return svg;
-}
-
-// ── Detail modal ──────────────────────────────────────────────────────
-let mSymbol = null, mData = null, mTimer = null;
-let mMode = localStorage.getItem('chartMode') || 'line';
-
-function chartScales(d, W, H) {
-  const bars = d.bars || [];
-  const m = {l: 48, r: 12, t: 12, b: 18};
-  const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  let lo = Infinity, hi = -Infinity;
-  for (const b of bars) { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); }
-  if (d.or_high != null) hi = Math.max(hi, d.or_high);
-  if (d.or_low != null) lo = Math.min(lo, d.or_low);
-  if (!isFinite(lo)) { lo = 0; hi = 1; }
-  const span = (hi - lo) || 1, n = bars.length;
-  return {bars, m, iw, ih, lo, hi, n,
-    x: i => m.l + (n <= 1 ? iw / 2 : i * iw / (n - 1)),
-    y: v => m.t + (hi - v) * ih / span};
-}
-
-function axisAndOR(svg, s, d) {
-  [s.lo, (s.lo + s.hi) / 2, s.hi].forEach(function (v) {
-    svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: s.y(v), y2: s.y(v),
-        stroke: '#D5D4CD', 'stroke-width': 0.5}));
-    const t = svgEl('text', {x: 4, y: s.y(v) + 3, fill: '#6B6A64', 'font-size': 10});
-    t.textContent = '$' + v.toFixed(2);
-    svg.appendChild(t);
-  });
-  function orLine(v, color, label, dy) {
-    svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: s.y(v), y2: s.y(v),
-        stroke: color, 'stroke-width': 1, 'stroke-dasharray': '4 3'}));
-    const t = svgEl('text', {x: s.m.l + s.iw - 2, y: s.y(v) + dy, fill: color,
-        'font-size': 10, 'text-anchor': 'end'});
-    t.textContent = label;
-    svg.appendChild(t);
-  }
-  if (d.or_high != null) orLine(d.or_high, '#8A6A1F', 'OR high', -3);
-  if (d.or_low != null) orLine(d.or_low, '#6B6A64', 'OR low', 11);
-}
-
-function lineChart(d) {
-  const W = 600, H = 300;
-  const svg = svgEl('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H});
-  const s = chartScales(d, W, H);
-  axisAndOR(svg, s, d);
-  if (s.n >= 2) {
-    const up = s.bars[s.n - 1].c >= s.bars[0].c;
-    svg.appendChild(svgEl('polyline', {points: s.bars.map((b, i) => s.x(i) + ',' + s.y(b.c)).join(' '),
-        fill: 'none', stroke: up ? '#0B4019' : '#7F1D1D', 'stroke-width': 1.5}));
-    const last = s.bars[s.n - 1];
-    svg.appendChild(svgEl('circle', {cx: s.x(s.n - 1), cy: s.y(last.c), r: 3, fill: up ? '#0B4019' : '#7F1D1D'}));
-  } else {
-    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#6B6A64', 'font-size': 12, 'text-anchor': 'middle'});
-    t.textContent = 'no bars buffered yet';
-    svg.appendChild(t);
-  }
-  return svg;
-}
-
-function candleChart(d) {
-  const W = 600, H = 300, volH = 46;
-  const svg = svgEl('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H});
-  const s = chartScales(d, W, H - volH);
-  axisAndOR(svg, s, d);
-  const n = s.n, bw = Math.max(2, (s.iw / Math.max(n, 1)) * 0.6);
-  const xc = i => s.m.l + (i + 0.5) * s.iw / Math.max(n, 1);
-  let maxV = 0;
-  for (const b of s.bars) maxV = Math.max(maxV, b.v || 0);
-  maxV = maxV || 1;
-  const vy = v => H - (v / maxV) * (volH - 4);
-  for (let i = 0; i < n; i++) {
-    const b = s.bars[i], up = b.c >= b.o, col = up ? '#0B4019' : '#7F1D1D';
-    svg.appendChild(svgEl('line', {x1: xc(i), x2: xc(i), y1: s.y(b.h), y2: s.y(b.l), stroke: col, 'stroke-width': 1}));
-    const top = Math.min(s.y(b.o), s.y(b.c)), hgt = Math.max(1, Math.abs(s.y(b.c) - s.y(b.o)));
-    svg.appendChild(svgEl('rect', {x: xc(i) - bw / 2, y: top, width: bw, height: hgt, fill: col}));
-    svg.appendChild(svgEl('rect', {x: xc(i) - bw / 2, y: vy(b.v || 0), width: bw, height: H - vy(b.v || 0),
-        fill: col, opacity: 0.5}));
-  }
-  svg.appendChild(svgEl('line', {x1: s.m.l, x2: s.m.l + s.iw, y1: H - volH, y2: H - volH,
-      stroke: '#D5D4CD', 'stroke-width': 0.5}));
-  if (n === 0) {
-    const t = svgEl('text', {x: W / 2, y: H / 2, fill: '#6B6A64', 'font-size': 12, 'text-anchor': 'middle'});
-    t.textContent = 'no bars buffered yet';
-    svg.appendChild(t);
-  }
-  return svg;
-}
-
-function drawDetail() {
-  if (!mData) return;
-  const host = document.getElementById('m-chart');
-  while (host.firstChild) host.removeChild(host.firstChild);
-  host.appendChild(mMode === 'candles' ? candleChart(mData) : lineChart(mData));
-}
-
-function setMode(mode) {
-  mMode = mode;
-  localStorage.setItem('chartMode', mode);
-  document.getElementById('t-line').className = mode === 'line' ? 'active' : '';
-  document.getElementById('t-candles').className = mode === 'candles' ? 'active' : '';
-  drawDetail();
-}
-
-async function loadDetail() {
-  if (!mSymbol) return;
-  mData = await (await fetch('/sgt/api/bars?symbol=' + encodeURIComponent(mSymbol))).json();
-  document.getElementById('m-title').textContent = mSymbol;
-  const band = (mData.or_low != null ? '$' + mData.or_low.toFixed(2) : '-')
-             + ' – ' + (mData.or_high != null ? '$' + mData.or_high.toFixed(2) : '-');
-  document.getElementById('m-sub').textContent = 'OR ' + band
-    + (mData.current != null ? '  ·  cur $' + mData.current.toFixed(2) : '')
-    + (mData.fired ? '  ·  BREAKOUT' : '');
-  drawDetail();
-}
-
-async function openModal(sym) {
-  mSymbol = sym;
-  document.getElementById('overlay').classList.add('open');
-  setMode(mMode);
-  await loadDetail();
-  if (mTimer) clearInterval(mTimer);
-  mTimer = setInterval(loadDetail, 2000);
-}
-
-function closeModal() {
-  document.getElementById('overlay').classList.remove('open');
-  mSymbol = null;
-  if (mTimer) { clearInterval(mTimer); mTimer = null; }
-}
-
-async function refresh() {
-  const status = await (await fetch('/sgt/api/status')).json();
-  // Drive the auth badge off the real broker state in /api/status, not
-  // /api/auth/status — the latter only reports that a client loaded at
-  // startup and stays "authenticated" even when the refresh token is dead.
-  const authOk = status.mode === 'running';
-  const authLabel = status.mode === 'error' ? 'token error'
-                  : status.mode === 'setup' ? 'unauthenticated'
-                  : authOk ? 'authenticated' : (status.mode || 'unknown');
-  setText('auth', authLabel, authOk ? 'ok' : 'err');
-  document.getElementById('oauth-btn').style.display =
-      authOk ? 'none' : 'inline-block';
-
-  setText('mode', status.mode || '-');
-
-  // TRADING_MODE + ORB capital-safety badge
-  const tm = status.trading_mode || '—';
-  setText('trading-mode', tm, tm === 'live' ? 'warn' : (tm === 'dry_run' ? 'ok' : ''));
-  const hdrTm = document.getElementById('hdr-trading');
-  hdrTm.textContent = tm;
-  hdrTm.className = 'badge ' + (tm === 'live' ? 'warn' : (tm === 'dry_run' ? 'ok' : 'muted'));
-  const orbLive = !!status.enable_orb_live;
-  const hdrOrb = document.getElementById('hdr-orb');
-  hdrOrb.textContent = orbLive ? 'ORB money ON' : 'ORB money OFF';
-  hdrOrb.className = 'badge ' + (orbLive ? 'err' : 'ok');
-
-  // Refresh-token expiry — the thing that used to die silently every 7 days.
-  const tk = status.token;
-  if (tk && tk.expires_at) {
-    if (tk.expired) {
-      setText('token', 'EXPIRED — re-auth', 'err');
-    } else {
-      const d = tk.days_remaining;
-      setText('token', 'expires in ' + d.toFixed(1) + 'd', d <= 2 ? 'warn' : 'ok');
-    }
-  } else {
-    setText('token', '—');
-  }
-
-  if (status.account) {
-    const a = status.account;
-    // Cash/buying power below zero means the account is overdrawn — a cash
-    // account cannot fund it, so surface it rather than burying it in a row.
-    const money = function (label, v) {
-      const cls = v < 0 ? ' err' : '';
-      return '<span class="field"><span class="label">' + label + '</span>'
-           + '<span class="metric' + cls + '">$' + v.toFixed(2) + '</span></span>';
-    };
-    document.getElementById('account').innerHTML =
-      money('Equity', a.equity) + money('Buying power', a.buying_power)
-      + money('Cash', a.cash)
-      + '<span class="field"><span class="label">Day trades</span>'
-      + '<span class="metric">' + a.daytrade_count + '</span></span>';
-  } else {
-    setText('account', '—');
-  }
-
-  // Education brief (cached condition + playbook)
-  try {
-    const edu = await (await fetch('/sgt/api/education')).json();
-    if (edu && edu.exists) {
-      const c = edu.condition || {};
-      setText('edu-meta', '· ' + (c.as_of || '') + ' · conf ' + (c.confidence || '—'));
-      document.getElementById('edu-summary').textContent = c.summary || '';
-      const tags = c.tags || [];
-      document.getElementById('edu-tags').innerHTML = tags.map(function (t) {
-        return '<span class="badge ok">' + t + '</span>';
-      }).join(' ');
-      const primary = (edu.education || {}).primary;
-      let playsHtml = '';
-      if (primary) {
-        playsHtml += '<div class="label" style="margin-bottom:6px">' + (primary.title || '') + '</div>';
-        (primary.plays || []).forEach(function (p) {
-          playsHtml += '<div style="margin-bottom:6px"><b>' + (p.letter || '') + '</b> '
-            + '<span class="muted">[' + (p.mode || 'study') + ']</span> '
-            + (p.title || '') + '<br><span class="muted">'
-            + (p.body || '').slice(0, 220) + ((p.body || '').length > 220 ? '…' : '')
-            + '</span></div>';
-        });
-      } else {
-        playsHtml = '<span class="muted">No playbook module matched — run market_brief after SPY fetch.</span>';
-      }
-      document.getElementById('edu-plays').innerHTML = playsHtml;
-      const acts = edu.lab_actions || [];
-      document.getElementById('edu-actions').textContent = acts.length
-        ? ('Lab: ' + acts.map(function (a) { return a.command; }).join(' · '))
-        : '';
-    } else {
-      setText('edu-meta', '');
-      document.getElementById('edu-summary').textContent =
-        'No condition file yet. Run: python -m scripts.lab.market_brief';
-      document.getElementById('edu-tags').textContent = '';
-      document.getElementById('edu-plays').textContent = '';
-      document.getElementById('edu-actions').textContent = '';
-    }
-  } catch (e) {
-    document.getElementById('edu-summary').textContent = 'Education panel unavailable.';
-  }
-
-  const positions = await (await fetch('/sgt/api/positions')).json();
-  let posValue = 0;
-  const posRows = positions.map(function (p) {
-    const pnl = p.unrealized_pnl || 0;
-    const value = (p.qty || 0) * (p.current_price || 0);
-    posValue += value;
-    return [
-      {text: p.symbol},
-      {text: String(p.qty)},
-      {text: '$' + (p.entry_price || 0).toFixed(2)},
-      {text: '$' + (p.current_price || 0).toFixed(2)},
-      {text: '$' + value.toFixed(2)},
-      {text: '$' + pnl.toFixed(2), cls: pnl >= 0 ? 'ok' : 'err'},
-    ];
-  });
-  renderTable('#pos-table tbody', posRows);
-  // Deployed capital vs equity: when these converge the account is fully
-  // committed, which is how the cash balance ends up at or below zero.
-  const posTotal = document.getElementById('pos-total');
-  if (positions.length) {
-    const eq = (status.account && status.account.equity) || 0;
-    const pctTxt = eq > 0 ? ' · ' + (posValue / eq * 100).toFixed(0) + '% of equity' : '';
-    posTotal.textContent = '· ' + positions.length + ' positions · $'
-                         + posValue.toFixed(2) + ' deployed' + pctTxt;
-  } else {
-    posTotal.textContent = '';
-  }
-
-  const orders = await (await fetch('/sgt/api/orders')).json();
-  const ordRows = orders.map(function (o) {
-    const s = (o.status || '').toLowerCase();
-    const cls = s === 'filled' ? 'ok'
-              : (s.indexOf('reject') >= 0 || s.indexOf('cancel') >= 0 || s.indexOf('expired') >= 0) ? 'err'
-              : 'warn';
-    return [
-      {text: o.symbol},
-      {text: String(o.qty)},
-      {text: o.type || '-'},
-      {text: o.status || '-', cls: cls},
-      {text: String(o.filled_qty || 0)},
-      {text: (o.submitted_at || '').replace('T', ' ').slice(0, 16)},
-    ];
-  });
-  renderTable('#orders-table tbody',
-    ordRows.length ? ordRows : [[{text: 'No open orders', cls: ''}, {text: ''}, {text: ''}, {text: ''}, {text: ''}, {text: ''}]]);
-
-  const paper = await (await fetch('/sgt/api/paper')).json();
-  if (paper.exists) {
-    setText('paper-meta', '· as of ' + (paper.last_date || '-'));
-    const ret = paper.total_return || 0;
-    document.getElementById('paper-summary').innerHTML =
-      'Equity <b>$' + paper.equity.toFixed(2) + '</b> &nbsp;|&nbsp; Return '
-      + '<b class="' + (ret >= 0 ? 'ok' : 'err') + '">' + (ret * 100).toFixed(1) + '%</b>'
-      + ' &nbsp;|&nbsp; Open ' + paper.n_open
-      + ' &nbsp;|&nbsp; Closed ' + paper.n_closed
-      + ' (win ' + (paper.win_rate * 100).toFixed(0) + '%)';
-    // Lab scoreboard (north-star is measurement only)
-    const sb = paper.scoreboard || {};
-    const roll = sb.rolling_mean_daily_return;
-    const gap = sb.distance_to_goal;
-    const dd = sb.max_drawdown;
-    let sbLine = 'Scoreboard: maxDD '
-      + (dd == null ? '—' : (dd * 100).toFixed(1) + '%');
-    if (roll != null) {
-      sbLine += ' · rolling daily ' + (roll * 100).toFixed(3) + '%'
-        + ' · gap to 1%/d ' + (gap * 100).toFixed(3) + '%';
-    } else {
-      sbLine += ' · rolling daily n/a (needs equity_curve_daily)';
-    }
-    if (paper.stale) sbLine += ' · <span class="err">LEDGER STALE</span>';
-    document.getElementById('paper-scoreboard').innerHTML = sbLine;
-    renderTable('#paper-open tbody', paper.open_positions.map(function (p) {
-      return [{text: p.symbol}, {text: p.entry_date},
-              {text: '$' + (p.entry_price || 0).toFixed(2)},
-              {text: '$' + (p.stop_price || 0).toFixed(2)},
-              {text: '$' + (p.notional || 0).toFixed(2)}];
-    }));
-    renderTable('#paper-closed tbody', paper.closed_trades.map(function (t) {
-      const pnl = t.pnl || 0;
-      return [{text: t.symbol},
-              {text: (t.entry_date || '') + ' → ' + (t.exit_date || '')},
-              {text: '$' + pnl.toFixed(2), cls: pnl >= 0 ? 'ok' : 'err'},
-              {text: t.reason || ''}];
-    }));
-  } else {
-    document.getElementById('paper-summary').textContent =
-      'No paper ledger yet (breakout_52w_paper).';
-    document.getElementById('paper-scoreboard').textContent = '';
-  }
-}
-
-document.getElementById('oauth-btn').addEventListener('click', function () {
-  window.location = '/schwab/oauth/start';
-});
-
-document.getElementById('t-line').addEventListener('click', function () { setMode('line'); });
-document.getElementById('t-candles').addEventListener('click', function () { setMode('candles'); });
-document.getElementById('m-close').addEventListener('click', closeModal);
-document.getElementById('overlay').addEventListener('click', function (e) {
-  if (e.target.id === 'overlay') closeModal();
-});
-document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
-
-refresh();
-setInterval(refresh, 2000);
-</script>
-</body>
-</html>
-"""
-
 
 @app.get("/")
 async def dashboard():
-    return HTMLResponse(_DASHBOARD_HTML)
+    return HTMLResponse(Path(__file__).with_name("dashboard.html").read_text())
 
 
 @app.get("/schwab/oauth/start")
@@ -771,6 +156,25 @@ def _token_block() -> dict:
     }
 
 
+def _cached_account():
+    snap = getattr(_bot, "_account_snapshot", None)
+    if isinstance(snap, dict):
+        return snap
+    account = _bot.client.get_account()
+    _bot._account_snapshot = account
+    return account
+
+
+def _cached_orders():
+    snap = getattr(_bot, "_open_orders_snapshot", None)
+    if isinstance(snap, list):
+        return snap
+    orders = _bot.client.get_orders(status="open")
+    if isinstance(orders, list):
+        _bot._open_orders_snapshot = orders
+    return orders
+
+
 @app.get("/api/status")
 async def status() -> dict:
     enable_orb = bool(getattr(_bot.config, "enable_orb_live", False)) if _bot else False
@@ -788,7 +192,7 @@ async def status() -> dict:
             "enable_orb_live": enable_orb,
         }
     try:
-        account = _bot.client.get_account()
+        account = _cached_account()
     except Exception as e:
         return {
             "mode": "error",
@@ -814,7 +218,8 @@ async def open_orders() -> list:
     if _bot is None or not _bot.client.is_authenticated:
         return []
     try:
-        return _bot.client.get_orders(status="open")
+        orders = _cached_orders()
+        return orders if isinstance(orders, list) else []
     except Exception:  # noqa: BLE001 — the dashboard must never 500 over this
         return []
 
@@ -878,7 +283,7 @@ async def bars(symbol: Optional[str] = None) -> dict:
 async def education_brief() -> dict:
     """Latest market-condition + playbook education card (read-only).
 
-    Populated by ``python -m scripts.lab.market_brief`` (or paper cron hook).
+    Populated by ``python -m scripts.lab.market_brief``.
     Does not place orders.
     """
     state_dir = "state"
@@ -895,6 +300,21 @@ async def education_brief() -> dict:
         return {"exists": False}
 
 
+@app.get("/api/ops")
+async def ops_snapshot() -> dict:
+    """Last live_swing / flatten snapshots + live universe size."""
+    state_dir = "state"
+    if _bot is not None and getattr(_bot.config, "state_dir", None):
+        state_dir = _bot.config.state_dir
+    try:
+        from src.lab.ops_snapshot import load_ops
+
+        return load_ops(state_dir=state_dir)
+    except Exception:  # noqa: BLE001
+        return {"universe": {"n": 0, "exists": False}, "last_live_swing": None, "last_flatten": None}
+
+
+
 @app.get("/api/positions")
 async def positions() -> list[dict]:
     if _bot is None:
@@ -902,70 +322,18 @@ async def positions() -> list[dict]:
     return [p.to_dict() for p in _bot.position_manager.get_open_positions()]
 
 
-@app.get("/api/paper")
-async def paper_forward() -> dict:
-    """Read-only view of the breakout_52w paper-forward ledger (lab experiment).
-
-    Simulated only — no real orders. Path resolved via registry (lab ledger with
-    legacy fallback).
-    """
-    if _bot is None:
-        return {"exists": False}
-    try:
-        from src.lab.paths import paper_ledger_path
-
-        path = paper_ledger_path(state_dir=_bot.config.state_dir)
-        if not path.exists():
-            return {"exists": False}
-        data = json.loads(path.read_text())
-    except Exception:
-        return {"exists": False}
-
-    start = float(data.get("starting_equity", 0.0) or 0.0)
-    realized = float(data.get("realized_pnl", 0.0) or 0.0)
-    equity = start + realized
-    closed = data.get("closed_trades", [])
-    wins = [t for t in closed if (t.get("pnl") or 0) > 0]
-    scoreboard = {}
-    stale = False
-    try:
-        from src.lab.metrics.daily_equity import is_ledger_stale, scoreboard as lab_scoreboard
-
-        scoreboard = lab_scoreboard(data)
-        stale, _ = is_ledger_stale(data, max_sessions=3)
-    except Exception:  # noqa: BLE001 — dashboard never 500s over metrics
-        pass
-    return {
-        "exists": True,
-        "experiment_id": "breakout_52w_paper",
-        "equity": equity,
-        "starting_equity": start,
-        "total_return": (equity / start - 1.0) if start else 0.0,
-        "realized_pnl": realized,
-        "n_open": len(data.get("open_positions", [])),
-        "n_closed": len(closed),
-        "win_rate": (len(wins) / len(closed)) if closed else 0.0,
-        "last_date": data.get("last_date"),
-        "open_positions": data.get("open_positions", []),
-        "closed_trades": list(reversed(closed))[:25],
-        "scoreboard": scoreboard,
-        "stale": stale,
-    }
-
-
 @app.get("/api/compare")
 async def compare() -> dict:
-    """Head-to-head of live bot ledger vs breakout_52w paper (lab) experiment.
+    """Edge metrics for the live ORB ledger.
 
-    Edge metrics (win rate, avg win/loss, expectancy, equal-weight return) are
-    sizing-independent — each closed trade is reduced to its price return
+    Win rate, avg win/loss, expectancy and equal-weight return are
+    sizing-independent — each closed trade is reduced to the price return
     exit/entry-1. Live account equity is reported separately. ORB live money is
-    retired by default (ENABLE_ORB_LIVE=false); the live side may be idle.
+    retired by default (ENABLE_ORB_LIVE=false), so the ledger may be idle.
     """
     if _bot is None:
-        return {"orb": None, "paper": None}
+        return {"orb": None}
 
-    # Live ORB — from the persistent trade ledger.
     orb_trades = _bot.trade_ledger.get_trades(limit=10_000)
     orb = comparison_stats(trade_returns(orb_trades, "entry_price", "exit_price"))
     orb["realized_pnl"] = _bot.trade_ledger.get_total_realized_pnl()
@@ -974,22 +342,7 @@ async def compare() -> dict:
     except Exception:
         orb["account_equity"] = None
 
-    # Paper breakout_52w — from the daily lab ledger (legacy path fallback).
-    paper = comparison_stats([])
-    paper["realized_pnl"] = 0.0
-    try:
-        from src.lab.paths import paper_ledger_path
-
-        path = paper_ledger_path(state_dir=_bot.config.state_dir)
-        if path.exists():
-            data = json.loads(path.read_text())
-            closed = data.get("closed_trades", [])
-            paper = comparison_stats(trade_returns(closed, "entry_price", "exit_price"))
-            paper["realized_pnl"] = float(data.get("realized_pnl", 0.0) or 0.0)
-    except Exception:
-        pass
-
-    return {"orb": orb, "paper": paper}
+    return {"orb": orb}
 
 
 @app.post("/admin/lock_or_now")

@@ -68,7 +68,12 @@ def intents_to_live_plan(
                 "price": price,
                 "notional": actual_notional,
                 "reason": intent.reason,
+                "stop_price": float(intent.stop_price) if intent.stop_price is not None else None,
+                # Carried so the live audit can record the regime the trade was
+                # entered in; execute_plan spreads this dict into its result.
+                "regime": (intent.metadata or {}).get("regime"),
             })
+
             # Decrement by what is actually planned, not the pre-rounding
             # figure, so remaining cash stays accurate across orders.
             cash -= actual_notional

@@ -2,32 +2,11 @@
 version: 1
 defaults:
   gates:
-    min_paper_trading_days: 40
     min_closed_trades: 15
-    max_paper_drawdown: 0.20
+    max_drawdown: 0.20
     require_positive_expectancy: true
 
 experiments:
-  breakout_52w_paper:
-    strategy: breakout_52w
-    params:
-      lookback: 252
-      ma_exit: 50
-      stop_pct: 0.08
-      risk_pct: 0.01
-      regime_sma: 200
-      use_regime_gate: true
-      slip_bps: 15.0
-    capital: 200.0
-    mode: paper
-    stage: paper
-    symbols_file: state/breakout_universe.txt
-    ledger_path: state/experiments/breakout_52w_paper/ledger.json
-    # Legacy path: auto-migrated to ledger_path on first lab paper run / web read
-    legacy_ledger_path: state/swing_paper_breakout.json
-    schedule: "30 14 * * 1-5"
-    crontab_owner: "host:jacisjake run_paper_forward.sh → lab run_experiment"
-
   # Promoted to live only via scripts.lab.promote --to live (writes overrides)
   breakout_52w_live:
     strategy: breakout_52w
@@ -38,33 +17,22 @@ experiments:
       risk_pct: 0.01
       regime_sma: 200
       use_regime_gate: true
+      use_ma_exit: false
+      k1: 2.0
+      k2: 3.0
+      atr_period: 14
+      stop_min_pct: 0.04
+      stop_max_pct: 0.15
       slip_bps: 15.0
+
     capital: 200.0
     mode: live
-    stage: paper
-    symbols_file: state/breakout_universe.txt
+    stage: research
+    symbols_file: state/universes/live.txt
+
     ledger_path: state/experiments/breakout_52w_live/ledger.json
     live_audit_path: state/experiments/breakout_52w_live/live_audit.json
-
-  # Same strategy/params as breakout_52w_paper, but over the screened low-price
-  # universe from scripts.lab.build_universe. Kept as a separate experiment so
-  # breakout_52w_paper's promotion evidence is unaffected — the +55% bake-off
-  # result was measured on the mega-cap list and does not transfer here.
-  breakout_52w_lowprice_paper:
-    strategy: breakout_52w
-    params:
-      lookback: 252
-      ma_exit: 50
-      stop_pct: 0.08
-      risk_pct: 0.01
-      regime_sma: 200
-      use_regime_gate: true
-      slip_bps: 15.0
-    capital: 200.0
-    mode: paper
-    stage: research
-    symbols_file: state/universes/liquid_lowprice.txt
-    ledger_path: state/experiments/breakout_52w_lowprice_paper/ledger.json
+    backtest_report_path: state/experiments/breakout_52w_live/backtest_report.json
 
   short_term_reversal_research:
     strategy: short_term_reversal
@@ -77,8 +45,8 @@ experiments:
       risk_pct: 0.01
       slip_bps: 15.0
     capital: 200.0
-    mode: paper
+    mode: backtest
     stage: research
     symbols_file: state/breakout_universe.txt
-    ledger_path: state/experiments/str_paper/ledger.json
-    backtest_report_path: state/experiments/str_paper/backtest_report.json
+    ledger_path: state/experiments/short_term_reversal_research/ledger.json
+    backtest_report_path: state/experiments/short_term_reversal_research/backtest_report.json

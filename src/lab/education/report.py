@@ -111,7 +111,7 @@ def _lab_actions(education: dict[str, Any]) -> list[dict[str, str]]:
             if key in seen:
                 continue
             seen.add(key)
-            if mode == "paper":
+            if mode == "backtest":
                 cmd = f"python -m scripts.lab.run_experiment --id {exp}"
             elif mode == "stand_down":
                 cmd = f"python -m scripts.lab.scoreboard --id {exp}  # review; no new risk"

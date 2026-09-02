@@ -1,25 +1,22 @@
-"""Promotion soft/hard gates and overrides."""
+"""Promotion soft/hard gates and overrides (research → live)."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from src.lab.ledger import new_state, save_state
 from src.lab.promote import (
     check_promotion,
     demote,
     promote_to_live,
-    promote_to_paper,
     validate_backtest_report,
     write_backtest_report,
 )
 from src.lab.registry import load_registry
 
 
-def _mini_registry(tmp_path: Path, stage="research", mode="paper"):
+def _mini_registry(tmp_path: Path, stage="research", mode="backtest"):
     git = tmp_path / "exp.yaml"
     git.write_text(
         yaml.dump(
@@ -27,9 +24,8 @@ def _mini_registry(tmp_path: Path, stage="research", mode="paper"):
                 "version": 1,
                 "defaults": {
                     "gates": {
-                        "min_paper_trading_days": 2,
                         "min_closed_trades": 1,
-                        "max_paper_drawdown": 0.5,
+                        "max_drawdown": 0.5,
                         "require_positive_expectancy": True,
                     }
                 },
@@ -52,52 +48,66 @@ def _mini_registry(tmp_path: Path, stage="research", mode="paper"):
     return git, tmp_path / "overrides.yaml"
 
 
-def test_validate_backtest_report(tmp_path):
-    path = tmp_path / "bt.json"
+def _good_report(path, *, n_taken=3, expectancy=0.1, max_drawdown=0.1):
     write_backtest_report(
         path,
         {
-            "strategy": "short_term_reversal",
+            "strategy": "breakout_52w",
             "params": {},
             "window": {"start": "2024-01-01", "end": "2024-06-01"},
-            "metrics": {"n_taken": 3, "expectancy": 0.1, "engine": "day_step"},
+            "metrics": {
+                "n_taken": n_taken,
+                "expectancy": expectancy,
+                "max_drawdown": max_drawdown,
+                "engine": "day_step",
+            },
         },
     )
+
+
+def test_validate_backtest_report(tmp_path):
+    path = tmp_path / "bt.json"
+    _good_report(path)
     data = validate_backtest_report(path)
     assert data["metrics"]["n_taken"] == 3
 
 
-def test_promote_research_to_paper_requires_report(tmp_path):
+def test_promote_to_live_requires_backtest_report(tmp_path):
+    """No report on disk -> hard gate fails, no promotion."""
     git, ov = _mini_registry(tmp_path, stage="research")
-    with pytest.raises(PermissionError):
-        promote_to_paper("x", git_path=str(git), override_path=str(ov))
-
-
-def test_promote_research_to_paper_with_report(tmp_path):
-    git, ov = _mini_registry(tmp_path, stage="research")
-    bt = tmp_path / "bt.json"
-    write_backtest_report(
-        bt,
-        {
-            "strategy": "breakout_52w",
-            "window": {"start": "a", "end": "b"},
-            "metrics": {"n_taken": 1},
-        },
-    )
-    result = promote_to_paper(
-        "x", git_path=str(git), override_path=str(ov), backtest_report=str(bt)
-    )
-    assert result["stage"] == "paper"
-    reg = load_registry(str(git), str(ov))
-    assert reg["x"].stage == "paper"
-
-
-def test_promote_to_live_force_with_reason(tmp_path):
-    git, ov = _mini_registry(tmp_path, stage="paper", mode="paper")
-    # empty ledger fails soft gates
-    save_state(str(tmp_path / "ledger.json"), new_state(200.0))
     with pytest.raises(PermissionError):
         promote_to_live("x", git_path=str(git), override_path=str(ov))
+
+
+def test_promote_to_live_with_passing_report(tmp_path):
+    git, ov = _mini_registry(tmp_path, stage="research")
+    _good_report(tmp_path / "bt.json")
+    result = promote_to_live("x", git_path=str(git), override_path=str(ov))
+    assert result["stage"] == "live"
+    reg = load_registry(str(git), str(ov))
+    assert reg["x"].stage == "live"
+    assert reg["x"].mode == "live"
+
+
+def test_promote_to_live_blocked_when_expectancy_negative(tmp_path):
+    git, ov = _mini_registry(tmp_path, stage="research")
+    _good_report(tmp_path / "bt.json", expectancy=-0.5)
+    with pytest.raises(PermissionError):
+        promote_to_live("x", git_path=str(git), override_path=str(ov))
+
+
+def test_promote_to_live_blocked_when_drawdown_exceeds_gate(tmp_path):
+    git, ov = _mini_registry(tmp_path, stage="research")
+    _good_report(tmp_path / "bt.json", max_drawdown=0.9)
+    with pytest.raises(PermissionError):
+        promote_to_live("x", git_path=str(git), override_path=str(ov))
+
+
+def test_promote_to_live_force_requires_reason(tmp_path):
+    git, ov = _mini_registry(tmp_path, stage="research")
+    _good_report(tmp_path / "bt.json", n_taken=0, expectancy=-1.0)
+    with pytest.raises(PermissionError):
+        promote_to_live("x", git_path=str(git), override_path=str(ov), force=True)
     result = promote_to_live(
         "x",
         git_path=str(git),
@@ -106,31 +116,31 @@ def test_promote_to_live_force_with_reason(tmp_path):
         reason="manual override for test",
     )
     assert result["stage"] == "live"
-    reg = load_registry(str(git), str(ov))
-    assert reg["x"].stage == "live"
-    assert reg["x"].mode == "live"
+    assert result["history"]["forced"] is True
 
 
-def test_demote_live_to_paper(tmp_path):
+def test_demote_live_to_research(tmp_path):
     git, ov = _mini_registry(tmp_path, stage="live", mode="live")
-    result = demote("x", to_stage="paper", git_path=str(git), override_path=str(ov))
-    assert result["stage"] == "paper"
+    result = demote("x", to_stage="research", git_path=str(git), override_path=str(ov))
+    assert result["stage"] == "research"
     reg = load_registry(str(git), str(ov))
-    assert reg["x"].stage == "paper"
+    assert reg["x"].stage == "research"
+    assert reg["x"].mode == "backtest"
 
 
-def test_check_promotion_writes_structure(tmp_path):
-    git, ov = _mini_registry(tmp_path, stage="paper")
-    state = new_state(200.0)
-    state["closed_trades"] = [
-        {"pnl": 1.0, "symbol": "A", "entry_date": "2024-01-01", "exit_date": "2024-01-02",
-         "entry_price": 1, "exit_price": 2, "reason": "time"}
-    ]
-    state["equity_curve_daily"] = [
-        {"date": "2024-01-01", "equity_realized": 200.0, "daily_return": 0, "open_positions": 0, "cash": 200},
-        {"date": "2024-01-02", "equity_realized": 201.0, "daily_return": 0.005, "open_positions": 0, "cash": 201},
-    ]
-    save_state(str(tmp_path / "ledger.json"), state)
+def test_demote_rejects_paper_stage(tmp_path):
+    """The paper stage no longer exists."""
+    git, ov = _mini_registry(tmp_path, stage="live", mode="live")
+    with pytest.raises(ValueError):
+        demote("x", to_stage="paper", git_path=str(git), override_path=str(ov))
+
+
+def test_check_promotion_reports_structure(tmp_path):
+    git, ov = _mini_registry(tmp_path, stage="research")
+    _good_report(tmp_path / "bt.json")
     reg = load_registry(str(git), str(ov))
     check = check_promotion(reg["x"])
     assert check["soft"]["passed"] is True
+    assert check["hard"]["stage_is_research"] is True
+    assert check["hard"]["backtest_report_valid"] is True
+    assert check["passed"] is True

@@ -3,7 +3,7 @@
 # Tags: risk_on | risk_off | chop | elevated_vol
 #
 # linked_experiment: optional id from config/experiments.yaml
-# mode: study | paper | stand_down  (never auto-live)
+# mode: study | backtest | stand_down  (never auto-live)
 
 version: 1
 
@@ -12,7 +12,7 @@ defaults:
     - id: capital_safety
       title: Capital safety first
       body: >
-        Paper is for learning. Live needs promote gates. ENABLE_ORB_LIVE stays
+        Backtests are for learning. Live needs promote gates. ENABLE_ORB_LIVE stays
         false unless you intentionally re-enable ORB money. 1%/day is a
         scoreboard north-star, not a promise for every regime.
 
@@ -28,10 +28,10 @@ modules:
         title: Stand down on new momentum breakouts
         body: >
           Fresh 52-week highs fail more often when the index is below its long
-          average. Your breakout_52w paper book already gates entries on SPY>SMA —
+          average. Your breakout_52w book already gates entries on SPY>SMA —
           treat that as the lesson, not a bug.
         mode: stand_down
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
       - letter: B
         title: Breakout prep list (levels only)
         body: >
@@ -60,14 +60,14 @@ modules:
           range. Prefer waiting for expansion (range ratio rising) before
           trusting momentum entries.
         mode: study
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
       - letter: B
         title: Mean-reversion study (not auto-live)
         body: >
           Classic chop toolkit: fade extremes back to VWAP/value, tight risk,
           quick targets. short_term_reversal is the lab's research candidate —
-          only paper after a backtest report and promote to paper.
-        mode: paper
+          only promoted after a backtest report clears the gates.
+        mode: backtest
         linked_experiment: short_term_reversal_research
       - letter: C
         title: Size down or sit
@@ -95,11 +95,11 @@ modules:
           In high vol, intraday breaks fail more. Educational bias: wait for
           daily/session close confirmation before treating a breakout as real.
         mode: study
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
       - letter: C
         title: Journal gap days
         body: >
-          Record open-vs-stop fills on paper trades. High-vol weeks teach fill
+          Record open-vs-stop fills on simulated trades. High-vol weeks teach fill
           reality (stop_fill_price / gap-through) better than calm weeks.
         mode: study
     anti_lessons:
@@ -110,13 +110,13 @@ modules:
     title: Risk-on — momentum education
     plays:
       - letter: A
-        title: Fresh breakout process (paper)
+        title: Fresh breakout process
         body: >
           breakout_52w: first close at a new lookback high, hard stop, trail under
-          exit SMA, regime gate on. Run the paper experiment and review open vs
+          exit SMA, regime gate on. Run the backtest and review open vs
           closed reasons (stop vs trend_break).
-        mode: paper
-        linked_experiment: breakout_52w_paper
+        mode: backtest
+        linked_experiment: breakout_52w_live
       - letter: B
         title: Let winners work
         body: >
@@ -129,10 +129,10 @@ modules:
           1% risk per idea still applies when the tape is good. Risk-on is not
           a license to deploy the whole account on one name.
         mode: study
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
     anti_lessons:
       - Do not skip the regime gate "just this once" after a winning streak.
-      - Do not promote to live on backtest alone — forward paper is the bar.
+      - Do not promote to live without a backtest report clearing the gates.
 
   - id: risk_on_chop
     when_tags: [risk_on, chop]
@@ -144,18 +144,18 @@ modules:
           Index may be above the long SMA while short-term range is dead. Wait
           for range expansion before trusting new 52w breaks.
         mode: study
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
       - letter: B
         title: One idea at a time
         body: >
-          Reduce concurrent paper positions until the range ratio improves.
+          Reduce concurrent positions until the range ratio improves.
         mode: stand_down
       - letter: C
         title: Review false breaks this week
         body: >
-          Count paper stops after breakout entries. High false-break rate
+          Count stops after breakout entries. High false-break rate
           confirms the chop tag.
         mode: study
-        linked_experiment: breakout_52w_paper
+        linked_experiment: breakout_52w_live
     anti_lessons:
       - Do not treat "SPY is up this year" as permission to ignore short-term chop.

@@ -1,4 +1,4 @@
-"""Shared strategy protocol for backtest / paper / live (decisions only)."""
+"""Shared strategy protocol for backtest / live (decisions only)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,7 +19,7 @@ class OrderIntent:
     """Strategy decision — never a broker call.
 
     Sizing contract (v1):
-      - Exits (SELL): strategy sets qty (and optional notional for paper).
+      - Exits (SELL): strategy sets qty (and optional notional).
       - Entries (BUY): strategy sets risk_pct + stop_price; runner applies cash caps.
     """
 

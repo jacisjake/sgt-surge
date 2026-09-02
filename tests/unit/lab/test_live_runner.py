@@ -12,7 +12,8 @@ import yaml
 from src.lab.fills.broker import execute_plan, intents_to_live_plan
 from src.lab.protocol import OrderIntent, Side
 from src.lab.registry import assert_can_run, load_registry
-from src.lab.runners.live import run_live_day
+from src.lab.runners.live import broker_to_views, run_live_day
+
 
 
 def _reg(tmp_path: Path, stage="live", mode="live"):
@@ -48,17 +49,16 @@ def _reg(tmp_path: Path, stage="live", mode="live"):
 
 
 def test_assert_can_run_live_requires_stage():
-    # use real git yaml breakout paper
     reg = load_registry("config/experiments.yaml", "/nonexistent")
-    exp = reg["breakout_52w_paper"]
+    exp = reg["breakout_52w_live"]   # stage=research until promoted
     with pytest.raises(PermissionError):
         assert_can_run(reg, exp, "live", "live")
 
 
-def test_assert_can_run_research_denies_paper():
+def test_assert_can_run_denies_paper_mode():
     reg = load_registry("config/experiments.yaml", "/nonexistent")
     exp = reg["short_term_reversal_research"]
-    with pytest.raises(PermissionError, match="promote to paper"):
+    with pytest.raises(PermissionError, match="unknown mode"):
         assert_can_run(reg, exp, "paper")
 
 
@@ -221,3 +221,36 @@ def test_cumulative_planned_notional_never_exceeds_available_cash():
     )
     total = sum(o["notional"] for o in plan if o["action"] == "buy")
     assert total <= 100.0, f"planned total {total} exceeds available cash 100.0"
+
+
+def test_broker_to_views_uses_stored_entry_date_and_initial_stop():
+    as_of = datetime.date(2026, 8, 18)
+    views = broker_to_views(
+        [{"symbol": "AAA", "qty": 2.0, "avg_entry_price": 10.0}],
+        as_of=as_of,
+        stop_pct=0.08,
+        audit_meta={
+            "AAA": {
+                "entry_date": "2026-08-01",
+                "initial_stop": 9.2,
+                "entry_price": 10.0,
+            }
+        },
+    )
+    assert len(views) == 1
+    assert views[0].entry_date == datetime.date(2026, 8, 1)
+    assert abs(views[0].stop_price - 9.2) < 1e-9
+
+
+def test_broker_to_views_does_not_reset_entry_date_without_meta():
+    """Unknown lots keep as_of only as a last resort — flag via metadata."""
+    as_of = datetime.date(2026, 8, 18)
+    views = broker_to_views(
+        [{"symbol": "BBB", "qty": 1.0, "avg_entry_price": 20.0}],
+        as_of=as_of,
+        stop_pct=0.08,
+        audit_meta={},
+    )
+    assert views[0].entry_date == as_of
+    assert abs(views[0].stop_price - 20.0 * 0.92) < 1e-9
+

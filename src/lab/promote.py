@@ -1,4 +1,4 @@
-"""Promotion gates and history (research → paper → live)."""
+"""Promotion gates and history (research → live)."""
 from __future__ import annotations
 
 import json
@@ -8,9 +8,8 @@ from typing import Any, Optional
 
 import yaml
 
-from src.lab.ledger import load_state
 from src.lab.metrics.gates import evaluate_soft_gates
-from src.lab.registry import Experiment, load_registry, resolve_ledger_path
+from src.lab.registry import Experiment, load_registry
 
 
 BACKTEST_REPORT_REQUIRED_KEYS = ("strategy", "window", "metrics")
@@ -39,20 +38,36 @@ def write_backtest_report(path: str | Path, report: dict[str, Any]) -> None:
 def check_promotion(
     exp: Experiment,
     *,
-    ledger_path: Optional[str] = None,
+    backtest_report: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Soft + structural checks for paper→live. Does not mutate registry."""
-    path = ledger_path or resolve_ledger_path(exp)
-    state = load_state(path, starting_equity=exp.capital)
-    soft = evaluate_soft_gates(state, exp.gates or {})
+    """Soft + structural checks for research→live. Does not mutate registry.
+
+    Evidence is the experiment's validated backtest report — it is the only
+    pre-live proof of edge.
+    """
+    path = backtest_report or exp.backtest_report_path
+    report: dict[str, Any] = {}
+    report_ok = False
+    report_error: Optional[str] = None
+    if path:
+        try:
+            report = validate_backtest_report(path)
+            report_ok = True
+        except (FileNotFoundError, ValueError) as e:
+            report_error = str(e)
+    else:
+        report_error = "no backtest_report_path set for experiment"
+
+    soft = evaluate_soft_gates(report, exp.gates or {})
     hard = {
-        "stage_is_paper": exp.stage == "paper",
-        "mode_is_paper_or_live": exp.mode in ("paper", "live"),
+        "stage_is_research": exp.stage == "research",
+        "backtest_report_valid": report_ok,
     }
     hard_ok = all(hard.values())
     return {
         "experiment_id": exp.id,
-        "ledger_path": path,
+        "backtest_report": path,
+        "backtest_report_error": report_error,
         "hard": hard,
         "hard_passed": hard_ok,
         "soft": soft,
@@ -119,56 +134,6 @@ def apply_stage_override(
     path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
-def promote_to_paper(
-    exp_id: str,
-    *,
-    git_path: str = "config/experiments.yaml",
-    override_path: str = "state/experiments/overrides.yaml",
-    backtest_report: Optional[str] = None,
-    force: bool = False,
-    reason: Optional[str] = None,
-    by: str = "operator",
-) -> dict[str, Any]:
-    reg = load_registry(git_path, override_path)
-    exp = reg[exp_id]
-    if exp.stage not in ("research", "paper"):
-        raise PermissionError(f"promote to paper from stage={exp.stage} not allowed")
-    if exp.stage == "paper":
-        return {"ok": True, "noop": True, "stage": "paper"}
-
-    report_path = backtest_report or exp.backtest_report_path
-    if not force:
-        if not report_path:
-            raise PermissionError("research→paper requires --backtest-report or exp.backtest_report_path")
-        try:
-            validate_backtest_report(report_path)
-        except (FileNotFoundError, ValueError) as e:
-            raise PermissionError(str(e)) from e
-    elif report_path and Path(report_path).exists():
-        try:
-            validate_backtest_report(report_path)
-        except (ValueError, FileNotFoundError):
-            pass
-
-    entry = _history_entry(
-        action="promote_to_paper",
-        from_stage=exp.stage,
-        to_stage="paper",
-        forced=force,
-        reason=reason,
-        evidence=report_path,
-        by=by,
-    )
-    apply_stage_override(
-        exp_id,
-        stage="paper",
-        mode="paper",
-        override_path=override_path,
-        history_entry=entry,
-    )
-    return {"ok": True, "stage": "paper", "history": entry}
-
-
 def promote_to_live(
     exp_id: str,
     *,
@@ -192,8 +157,8 @@ def promote_to_live(
     check_path.parent.mkdir(parents=True, exist_ok=True)
     check_path.write_text(json.dumps(check, indent=2) + "\n")
 
-    if exp.stage != "paper" and not force:
-        raise PermissionError(f"promote to live requires stage=paper (got {exp.stage})")
+    if exp.stage != "research" and not force:
+        raise PermissionError(f"promote to live requires stage=research (got {exp.stage})")
 
     if not check["passed"] and not force:
         raise PermissionError(
@@ -225,14 +190,14 @@ def promote_to_live(
 def demote(
     exp_id: str,
     *,
-    to_stage: str = "paper",
+    to_stage: str = "research",
     git_path: str = "config/experiments.yaml",
     override_path: str = "state/experiments/overrides.yaml",
     reason: Optional[str] = None,
     by: str = "operator",
 ) -> dict[str, Any]:
-    if to_stage not in ("paper", "research"):
-        raise ValueError("demote target must be paper or research")
+    if to_stage != "research":
+        raise ValueError("demote target must be research")
     reg = load_registry(git_path, override_path)
     exp = reg[exp_id]
     entry = _history_entry(
@@ -244,7 +209,7 @@ def demote(
         evidence=None,
         by=by,
     )
-    mode = "paper" if to_stage in ("paper", "research") else exp.mode
+    mode = "backtest"
     apply_stage_override(
         exp_id,
         stage=to_stage,

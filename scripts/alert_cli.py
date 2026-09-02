@@ -2,7 +2,7 @@
 
     python -m scripts.alert_cli "SUBJECT" "BODY"
 
-Used by run_paper_forward.sh so a failed cron run shouts instead of quietly
+Used by cron wrappers so a failed run shouts instead of quietly
 writing a traceback into a log nobody reads. Exits non-zero if the mail could
 not be sent (unconfigured SMTP or a send failure), so cron surfaces it.
 """

@@ -7,7 +7,6 @@ from typing import Any
 from src.lab.registry import Experiment, assert_can_run, load_registry
 from src.lab.runners.backtest import run_day_step_backtest, write_report_from_backtest
 from src.lab.runners.live import run_live_day
-from src.lab.runners.paper import run_paper_day
 
 
 class ExperimentRunner:
@@ -66,9 +65,6 @@ class ExperimentRunner:
                     result=result,
                 )
             return {"ok": True, "mode": "backtest", **result["metrics"], "window": result["window"]}
-
-        if mode in ("paper",):
-            return run_paper_day(exp, client, as_of=as_of)
 
         if mode == "live":
             if executor is None and not preview:

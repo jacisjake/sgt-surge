@@ -1,4 +1,4 @@
-"""BacktestRunner — day-step engine identical to paper SimFill."""
+"""BacktestRunner — day-step engine over SimFill."""
 from __future__ import annotations
 
 from datetime import date
@@ -7,7 +7,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from src.lab.fills.sim import apply_intents
-from src.lab.ledger import new_state, portfolio_from_paper
+from src.lab.ledger import new_state, portfolio_from_state
 from src.lab.protocol import MarketContext
 from src.lab.promote import write_backtest_report
 from src.lab.strategies import get_strategy
@@ -69,7 +69,7 @@ def run_day_step_backtest(
                     spy_sliced, sma_period=regime_sma
                 ).get(session, False)
 
-        portfolio = portfolio_from_paper(state, session)
+        portfolio = portfolio_from_state(state, session)
         market = MarketContext(bars_by_symbol=sliced, extras=extras, now=session)
         intents = strategy.plan(portfolio, market, plan_params)
         state = apply_intents(

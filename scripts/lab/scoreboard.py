@@ -1,4 +1,4 @@
-"""CLI: python -m scripts.lab.scoreboard --id breakout_52w_paper"""
+"""CLI: python -m scripts.lab.scoreboard --id breakout_52w_live"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ import sys
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Paper experiment equity scoreboard vs 1% north-star")
+    p = argparse.ArgumentParser(description="Experiment equity scoreboard vs 1% north-star")
     p.add_argument("--id", required=True, help="Experiment id")
     p.add_argument("--config", default="config/experiments.yaml")
     p.add_argument("--overrides", default="state/experiments/overrides.yaml")

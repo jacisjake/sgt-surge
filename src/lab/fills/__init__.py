@@ -1,1 +1,1 @@
-"""Fill adapters (SimFill for paper; BrokerFill later)."""
+"""Fill adapters (SimFill for simulation; BrokerFill for live)."""

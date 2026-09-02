@@ -1,6 +1,6 @@
 """Live execution of the regime-gated breakout_52w swing strategy.
 
-Reuses the SAME validated logic as the paper forward-tester (build_risk_on,
+Reuses the SAME validated logic as the lab strategy (build_risk_on,
 is_fresh_breakout, stop / trend-break exits, 1%-risk sizing) but places REAL
 fractional orders through the Schwab executor instead of simulated fills.
 
@@ -23,16 +23,15 @@ sys.path.insert(0, "/app")
 
 import pandas as pd  # noqa: E402
 
+from src.lab.fills.broker import intents_to_live_plan  # noqa: E402
 from src.lab.protocol import (  # noqa: E402
     MarketContext,
     PortfolioView,
-    PositionView,
-    Side,
     bar_index_for_date,
-    order_exits_before_entries,
 )
+from src.lab.runners.live import broker_to_views  # noqa: E402
 from src.lab.strategies.breakout_52w import Breakout52wStrategy  # noqa: E402
-from src.lab.strategies._common import build_risk_on, is_fresh_breakout  # noqa: E402
+
 
 
 def _today_idx(df: pd.DataFrame, today: dt.date):
@@ -53,31 +52,27 @@ def plan_orders(
     stop_pct: float = 0.08,
     regime_sma: int = 200,
     use_regime_gate: bool = True,
+    position_meta: dict | None = None,
+    k1: float | None = None,
+    k2: float = 3.0,
+    atr_period: int = 14,
+    use_ma_exit: bool = False,
 ) -> list[dict]:
     """Return the list of orders to place today. Pure — no I/O, no side effects.
 
     Decisions come from Breakout52wStrategy.plan; this function only converts
-    intents into the legacy live_swing order-dict shape and applies cash sizing.
+    intents into the live order-dict shape and applies cash sizing.
     """
-    views: list[PositionView] = []
-    for p in positions:
-        avg = float(p["avg_entry_price"])
-        qty = float(p["qty"])
-        views.append(
-            PositionView(
-                symbol=p["symbol"],
-                qty=qty,
-                avg_entry_price=avg,
-                entry_date=today,  # broker often lacks entry_date; exits don't need it
-                stop_price=avg * (1 - stop_pct),
-                notional=qty * avg,
-            )
-        )
     portfolio = PortfolioView(
         as_of=today,
         equity=equity,
         available_cash=available_cash,
-        positions=views,
+        positions=broker_to_views(
+            positions,
+            as_of=today,
+            stop_pct=stop_pct,
+            audit_meta=position_meta or {},
+        ),
     )
     extras: dict = {}
     if spy_df is not None:
@@ -90,52 +85,28 @@ def plan_orders(
         "risk_pct": risk_pct,
         "regime_sma": regime_sma,
         "use_regime_gate": use_regime_gate,
+        "use_ma_exit": use_ma_exit,
+        "k2": k2,
+        "atr_period": atr_period,
     }
-    intents = order_exits_before_entries(
-        Breakout52wStrategy().plan(portfolio, market, params)
+    if k1 is not None:
+        params["k1"] = k1
+    intents = Breakout52wStrategy().plan(portfolio, market, params)
+    prices: dict[str, float] = {}
+    for sym, df in bars_by_symbol.items():
+        i = bar_index_for_date(df, today)
+        if i is not None:
+            prices[sym] = float(df["close"].iloc[i])
+    return intents_to_live_plan(
+        intents,
+        equity=equity,
+        available_cash=available_cash,
+        stop_pct=stop_pct,
+        prices=prices,
+        risk_pct_default=risk_pct,
+        cash_buffer_pct=0.0,
     )
 
-    plan: list[dict] = []
-    cash = available_cash
-    for intent in intents:
-        df = bars_by_symbol.get(intent.symbol)
-        if df is None or df.empty:
-            continue
-        i = bar_index_for_date(df, today)
-        if i is None:
-            continue
-        close = float(df["close"].iloc[i])
-        if intent.side == Side.SELL:
-            qty = float(intent.qty or 0.0)
-            plan.append({
-                "action": "sell",
-                "symbol": intent.symbol,
-                "qty": qty,
-                "price": close,
-                "notional": qty * close,
-                "reason": intent.reason,
-            })
-        elif intent.side == Side.BUY:
-            entry_price = float(intent.metadata.get("entry_price", close))
-            if entry_price <= 0:
-                continue
-            notional = min(risk_pct * equity / stop_pct, cash)
-            if notional < 1.0:
-                continue
-            qty = round(notional / entry_price, 4)
-            if qty <= 0:
-                continue
-            plan.append({
-                "action": "buy",
-                "symbol": intent.symbol,
-                "qty": qty,
-                "price": entry_price,
-                "notional": qty * entry_price,
-                "reason": intent.reason,
-            })
-            cash -= notional
-
-    return plan
 
 
 def execute_plan(plan: list[dict], executor) -> list[dict]:
@@ -156,6 +127,40 @@ def execute_plan(plan: list[dict], executor) -> list[dict]:
                 r["action"], r["qty"], r["symbol"], r.get("error"),
             )
     return results
+
+
+def record_closed_trades(results, position_meta, journal_path, today) -> list[dict]:
+    """Journal every filled sell before its position meta is dropped. Pure I/O.
+
+    A closed position is the only evidence this book produces — R-multiple,
+    exit reason and entry regime are unrecoverable once the meta is gone. A
+    position with no meta (opened before the audit file existed) is still
+    recorded, with the unknowable fields left null rather than guessed.
+    """
+    from src.lab.journal import append_closed_trade
+
+    written: list[dict] = []
+    for r in results:
+        if r.get("status") != "submitted" or r.get("action") != "sell":
+            continue
+        meta = dict((position_meta or {}).get(r["symbol"]) or {})
+        entry_price = meta.get("entry_price")
+        initial_stop = meta.get("initial_stop")
+        record = {
+            "symbol": r["symbol"],
+            "entry_date": meta.get("entry_date"),
+            "exit_date": today.isoformat(),
+            "entry_price": entry_price,
+            "exit_price": r.get("price"),
+            "qty": r.get("qty"),
+            "initial_stop": initial_stop,
+            "reason": r.get("reason"),
+            "regime": meta.get("regime"),
+        }
+        if entry_price is None or initial_stop is None:
+            record["r_multiple"] = None
+        written.append(append_closed_trade(journal_path, record))
+    return written
 
 
 def order_summary(results: list[dict], today, equity: float) -> tuple[str, str]:
@@ -210,30 +215,63 @@ def _run(args) -> int:
         print("Schwab not authenticated — re-auth first.")
         return 1
 
-    symbols = [s.strip().upper() for s in Path(args.symbols_file).read_text().split() if s.strip()]
+    from src.lab.runners.live import load_audit, save_audit
+
+
+    symbols_path = Path(args.symbols_file)
+    symbols = [
+        s.strip().upper()
+        for s in symbols_path.read_text().split()
+        if s.strip()
+    ] if symbols_path.exists() else []
+    positions = client.get_positions()
+    for p in positions:
+        sym = str(p.get("symbol") or "").upper()
+        if sym and sym not in symbols:
+            symbols.append(sym)
     bars, spy = _fetch(client, symbols, args.lookback)
     if not bars:
         print("No bars fetched — nothing to do.")
         return 1
     today = max(df.index[-1].date() for df in bars.values())
 
-    positions = client.get_positions()
     acct = client.get_account()
     equity, cash = float(acct["equity"]), float(acct["buying_power"])
+    audit = load_audit(Path(args.audit_path)) if args.audit_path else {"position_meta": {}}
 
+    regime = None
     if spy is not None and not spy.empty:
         sma = float(spy["close"].rolling(200).mean().iloc[-1])
         spot = float(spy["close"].iloc[-1])
-        print(f"[REGIME] SPY {spot:.2f} vs SMA200 {sma:.2f} -> "
-              f"{'RISK-ON' if spot > sma else 'RISK-OFF'}")
+        regime = "RISK-ON" if spot > sma else "RISK-OFF"
+        print(f"[REGIME] SPY {spot:.2f} vs SMA200 {sma:.2f} -> {regime}")
 
-    plan = plan_orders(positions, bars, spy, equity, cash, today,
-                       risk_pct=args.risk_pct, lookback=args.lookback,
-                       ma_exit=args.ma_exit, stop_pct=args.stop_pct)
+    plan = plan_orders(
+        positions, bars, spy, equity, cash, today,
+        risk_pct=args.risk_pct, lookback=args.lookback,
+        ma_exit=args.ma_exit, stop_pct=args.stop_pct,
+        position_meta=audit.get("position_meta") or {},
+        k1=args.k1, k2=args.k2, atr_period=args.atr_period,
+        use_ma_exit=args.use_ma_exit,
+    )
+
+    from src.lab.ops_snapshot import write_json
+    last_path = Path(getattr(args, "last_run_path", "state/live_swing_last.json"))
+    snapshot = {
+        "date": today.isoformat(),
+        "preview": not bool(args.live),
+        "equity": equity,
+        "cash": cash,
+        "symbols_file": args.symbols_file,
+        "regime": regime,
+        "plan": plan,
+        "results": None,
+    }
 
     print(f"\n=== Live swing plan — {today}  (equity ${equity:.2f}, cash ${cash:.2f}) ===")
     if not plan:
         print("  No orders today.")
+        write_json(last_path, snapshot)
         return 0
     for o in plan:
         print(f"  {o['action'].upper():4} {o['qty']:.4f} {o['symbol']:6} "
@@ -241,6 +279,7 @@ def _run(args) -> int:
 
     if not args.live:
         print("\nPREVIEW ONLY — no orders placed. Re-run with --live to place them.")
+        write_json(last_path, snapshot)
         return 0
 
     if cfg.trading_mode != TradingMode.LIVE:
@@ -254,12 +293,30 @@ def _run(args) -> int:
         print(f"  {r['status'].upper():9} {r['action']} {r['qty']:.4f} {r['symbol']}"
               + (f"  ({r['error']})" if r.get("error") else ""))
 
-    # Real money moved unattended — always email what happened.
     if results:
         from src.bot.alerts import send_email_alert
         subject, body = order_summary(results, today, equity)
         send_email_alert(subject, body, cfg)
+        meta = audit.setdefault("position_meta", {})
+        record_closed_trades(results, meta, Path(args.journal_path), today)
+        for r in results:
+            if r.get("status") == "submitted" and r["action"] == "buy":
+                meta[r["symbol"]] = {
+                    "entry_date": today.isoformat(),
+                    "entry_price": r.get("price"),
+                    "initial_stop": r.get("stop_price"),
+                    "regime": r.get("regime"),
+                    "strategy": "breakout_52w",
+                }
+            if r.get("status") == "submitted" and r["action"] == "sell":
+                meta.pop(r["symbol"], None)
+        if args.audit_path:
+            save_audit(Path(args.audit_path), audit)
+    snapshot["preview"] = False
+    snapshot["results"] = results
+    write_json(last_path, snapshot)
     return 0
+
 
 
 def main(argv=None) -> int:
@@ -269,8 +326,22 @@ def main(argv=None) -> int:
     ap.add_argument("--lookback", type=int, default=252)
     ap.add_argument("--ma-exit", type=int, default=50)
     ap.add_argument("--stop-pct", type=float, default=0.08)
+    ap.add_argument("--k1", type=float, default=2.0)
+    ap.add_argument("--k2", type=float, default=3.0)
+    ap.add_argument("--atr-period", type=int, default=14)
+    ap.add_argument("--use-ma-exit", action="store_true")
+    ap.add_argument(
+        "--journal-path",
+        default="state/experiments/breakout_52w_live/journal.json",
+        help="Append-only closed-trade journal (R-multiple, reason, entry regime)",
+    )
+    ap.add_argument(
+        "--audit-path",
+        default="state/experiments/breakout_52w_live/live_audit.json",
+    )
     ap.add_argument("--live", action="store_true",
                     help="PLACE REAL ORDERS (default is preview only)")
+
     args = ap.parse_args(argv)
 
     try:

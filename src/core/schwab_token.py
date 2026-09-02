@@ -81,7 +81,7 @@ def needs_attention(status: dict, warn_within_days: float = 2.0) -> tuple[bool, 
             "CRITICAL",
             f"Schwab refresh token EXPIRED at {status['expires_at']} "
             f"({abs(status['days_remaining']):.1f} days ago). The bot is down and the "
-            f"paper-forward cron is failing.",
+            f"lab live runner is failing.",
         )
 
     if status["days_remaining"] <= warn_within_days:

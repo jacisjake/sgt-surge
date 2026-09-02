@@ -43,8 +43,8 @@ def build_body(level: str, message: str, status: dict) -> str:
             "Schwab refresh tokens expire 7 days after creation and cannot be renewed",
             "by any API call — this re-consent is manual by design, not a bug in the bot.",
             "",
-            "While the token is dead the bot cannot trade and the breakout_52w",
-            "paper-forward cron fails, so the ledger stops advancing.",
+            "While the token is dead the bot cannot trade and the lab live",
+            "runner fails, so the ledger stops advancing.",
         ]
     return "\n".join(lines)
 
@@ -78,25 +78,26 @@ def main() -> int:
 
     sent = send_email_alert(subject, build_body(level, message, status), cfg)
 
-    # Also alert if the primary paper ledger stopped advancing (cron silence).
+    # Also alert if the active live experiment ledger stopped advancing.
     try:
         from src.lab.metrics.daily_equity import check_experiment_staleness
         from src.lab.registry import load_registry
 
         reg = load_registry()
-        if "breakout_52w_paper" in reg:
-            stale = check_experiment_staleness(reg["breakout_52w_paper"], max_sessions=3)
+        live = next((e for e in reg.values() if e.stage == "live"), None)
+        if live is not None:
+            stale = check_experiment_staleness(live, max_sessions=3)
             if stale.get("stale"):
-                print(f"[STALE] paper ledger: {stale.get('reason')}")
+                print(f"[STALE] {live.id} ledger: {stale.get('reason')}")
                 if alerts_configured(cfg):
                     send_email_alert(
-                        "[sgt-schwab] WARNING: paper ledger stale — cron may be dead",
+                        f"[sgt-schwab] WARNING: {live.id} ledger stale",
                         (
-                            f"breakout_52w_paper last_date={stale.get('last_date')}\n"
+                            f"{live.id} last_date={stale.get('last_date')}\n"
                             f"as_of={stale.get('as_of')}\n"
                             f"weekdays_since={stale.get('weekdays_since')}\n"
                             f"ledger={stale.get('ledger_path')}\n\n"
-                            "Check run_paper_forward.sh cron and Schwab token.\n"
+                            "Check the lab live runner and Schwab token.\n"
                         ),
                         cfg,
                     )

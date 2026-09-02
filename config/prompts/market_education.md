@@ -10,7 +10,7 @@ You will receive a JSON object with:
 - `condition.as_of`, `condition.tags`, `condition.confidence`, `condition.summary`, `condition.evidence`
 - `education.primary` and `education.modules` (hand-authored plays A/B/C, anti_lessons)
 - `lab_actions` (commands / experiment ids)
-- optional: latest paper scoreboard snippet for `breakout_52w_paper`
+- optional: latest scoreboard snippet for `breakout_52w_live`
 
 ## Task
 
@@ -20,7 +20,7 @@ Write a short **educational brief** (not financial advice) for a small cash-acco
 2. **What to study (A / B / C)** — paraphrase the primary module's plays; keep letter labels.
 3. **What not to do** — list anti_lessons unchanged in spirit.
 4. **Lab homework** — map to `lab_actions` commands only (no new live orders).
-5. **Reality check** — if paper is underwater or ledger is stale, say so calmly; education ≠ edge.
+5. **Reality check** — if the ledger is underwater or stale, say so calmly; education ≠ edge.
 
 ## Constraints
 

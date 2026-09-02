@@ -1,11 +1,8 @@
-"""Day-step BacktestRunner parity with paper step."""
+"""Day-step BacktestRunner behaviour on a single fresh breakout."""
 from __future__ import annotations
-
-import copy
 
 import pandas as pd
 
-from scripts.research.swing.paper_forward import new_state, step
 from src.lab.runners.backtest import run_day_step_backtest
 
 
@@ -27,29 +24,48 @@ def _make_breakout_bars(lookback: int = 10) -> pd.DataFrame:
     return df
 
 
-def test_backtest_matches_step_on_single_breakout_day():
-    lookback = 10
-    df = _make_breakout_bars(lookback)
-    today = df.index[-1].date()
-    params = {
-        "lookback": lookback,
-        "ma_exit": 3,
-        "stop_pct": 0.08,
-        "risk_pct": 0.01,
-        "slip_bps": 15.0,
-        "use_regime_gate": False,
-    }
-    s = step(new_state(200.0), {"SYM": df}, today, **{k: params[k] for k in
-             ("lookback", "ma_exit", "stop_pct", "risk_pct", "slip_bps")})
-    result = run_day_step_backtest(
+BASE_PARAMS = {
+    "lookback": 10,
+    "ma_exit": 3,
+    "stop_pct": 0.08,
+    "risk_pct": 0.01,
+    "slip_bps": 15.0,
+    "use_regime_gate": False,
+}
+
+
+def _run(params=None, capital=200.0):
+    return run_day_step_backtest(
         "breakout_52w",
-        {"SYM": df},
-        params,
-        capital=200.0,
+        {"SYM": _make_breakout_bars()},
+        {**BASE_PARAMS, **(params or {})},
+        capital=capital,
     )
-    st = result["state"]
-    assert len(st["open_positions"]) == len(s["open_positions"])
-    if st["open_positions"]:
-        assert abs(st["open_positions"][0]["notional"] - s["open_positions"][0]["notional"]) < 0.01
-        assert abs(st["available_cash"] - s["available_cash"]) < 0.01
-    assert result["metrics"]["engine"] == "day_step"
+
+
+def test_fresh_breakout_opens_one_position():
+    st = _run()["state"]
+    assert len(st["open_positions"]) == 1
+    pos = st["open_positions"][0]
+    assert pos["symbol"] == "SYM"
+    assert pos["entry_price"] == 101.0
+    # stop_pct 0.08 below entry
+    assert abs(pos["stop_price"] - 101.0 * 0.92) < 0.01
+
+
+def test_position_sized_by_risk_budget():
+    """notional = capital * risk_pct / stop_pct -> 200 * 0.01 / 0.08 = 25."""
+    pos = _run()["state"]["open_positions"][0]
+    assert abs(pos["notional"] - 25.0) < 0.01
+
+
+def test_risk_off_override_blocks_the_entry():
+    st = _run({"use_regime_gate": True, "risk_on_override": False})["state"]
+    assert st["open_positions"] == []
+
+
+def test_metrics_report_day_step_engine_and_no_closed_trades():
+    metrics = _run()["metrics"]
+    assert metrics["engine"] == "day_step"
+    assert metrics["n_taken"] == 0
+    assert metrics["final_equity"] == 200.0

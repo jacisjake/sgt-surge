@@ -37,14 +37,31 @@ def main(argv=None) -> int:
     p.add_argument("--lookback-days", type=int, default=560,
                    help="Calendar days of history to fetch per candidate")
     p.add_argument("--out", default="state/universes/liquid_lowprice.txt")
+    p.add_argument(
+        "--live-out",
+        default="state/universes/live.txt",
+        help="Union of the 3-25 screen plus --overlay (fractionals allowed)",
+    )
+    p.add_argument(
+        "--overlay",
+        default="config/universes/ai_wafer.txt",
+        help="Always-include names (AI wafer / WFE). Empty string disables.",
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="Print the result without writing the file")
+
     args = p.parse_args(argv)
 
     from src.bot.config import get_bot_config
     from src.bot.tradingview_screener import TradingViewScreener
     from src.core.schwab_client import SchwabClient
-    from src.lab.universe import median_dollar_volume, screen
+    from src.lab.universe import (
+        median_dollar_volume,
+        parse_symbols,
+        screen,
+        union_symbol_lists,
+    )
+
 
     params = {
         "price_min": args.price_min,
@@ -100,16 +117,28 @@ def main(argv=None) -> int:
     if not symbols:
         print("Nothing qualified; not writing an empty universe.", file=sys.stderr)
         return 1
-    print(" ".join(symbols))
+
+    overlay: list[str] = []
+    if args.overlay:
+        overlay_path = Path(args.overlay)
+        if overlay_path.exists():
+            overlay = parse_symbols(overlay_path.read_text())
+    live = union_symbol_lists(symbols, overlay)
+    print(f"Live union: {len(symbols)} screened + {len(overlay)} overlay -> {len(live)}")
 
     if args.dry_run:
         print("\n--dry-run: file not written")
+        print(" ".join(live))
         return 0
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(" ".join(symbols) + "\n")
-    print(f"\nWrote {len(symbols)} symbols -> {out}")
+    print(f"Wrote {len(symbols)} symbols -> {out}")
+    live_out = Path(args.live_out)
+    live_out.parent.mkdir(parents=True, exist_ok=True)
+    live_out.write_text(" ".join(live) + "\n")
+    print(f"Wrote {len(live)} symbols -> {live_out}")
     return 0
 
 

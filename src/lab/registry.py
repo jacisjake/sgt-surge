@@ -18,7 +18,6 @@ class Experiment:
     stage: str
     symbols_file: str
     ledger_path: str
-    legacy_ledger_path: Optional[str] = None
     backtest_report_path: Optional[str] = None
     live_audit_path: Optional[str] = None
     schedule: Optional[str] = None
@@ -75,7 +74,6 @@ def _experiment_to_dict(cur: Experiment) -> dict:
         "stage": cur.stage,
         "symbols_file": cur.symbols_file,
         "ledger_path": cur.ledger_path,
-        "legacy_ledger_path": cur.legacy_ledger_path,
         "backtest_report_path": cur.backtest_report_path,
         "live_audit_path": cur.live_audit_path,
         "schedule": cur.schedule,
@@ -91,11 +89,10 @@ def _to_experiment(exp_id: str, raw: dict) -> Experiment:
         strategy=raw["strategy"],
         params=dict(raw.get("params") or {}),
         capital=float(raw.get("capital", 200.0)),
-        mode=str(raw.get("mode", "paper")),
+        mode=str(raw.get("mode", "backtest")),
         stage=str(raw.get("stage", "research")),
         symbols_file=str(raw["symbols_file"]),
         ledger_path=str(raw["ledger_path"]),
-        legacy_ledger_path=raw.get("legacy_ledger_path"),
         backtest_report_path=raw.get("backtest_report_path"),
         live_audit_path=raw.get("live_audit_path"),
         schedule=raw.get("schedule"),
@@ -106,17 +103,7 @@ def _to_experiment(exp_id: str, raw: dict) -> Experiment:
 
 
 def resolve_ledger_path(exp: Experiment) -> str:
-    """Prefer lab ledger_path; fall back to legacy only if new file missing.
-
-    Migration (PR14): when ledger_path exists, always use it. When only the
-    legacy file exists, return legacy so readers still work; writers should call
-    ``src.lab.paths.maybe_migrate_legacy`` to copy forward.
-    """
-    ledger = Path(exp.ledger_path)
-    if ledger.exists():
-        return exp.ledger_path
-    if exp.legacy_ledger_path and Path(exp.legacy_ledger_path).exists():
-        return exp.legacy_ledger_path
+    """Return the experiment's ledger path."""
     return exp.ledger_path
 
 
@@ -137,24 +124,10 @@ def assert_can_run(
 
     # Invalid registry rows (option A)
     if exp.stage == "live" and exp.mode != "live":
-        raise PermissionError(
-            "stage=live requires mode=live; use a separate paper id for shadow"
-        )
+        raise PermissionError("stage=live requires mode=live")
 
-    if mode == "paper":
-        if exp.stage == "research":
-            raise PermissionError("promote to paper first (stage=research)")
-        if exp.stage == "live":
-            raise PermissionError(
-                "stage=live is live-only; run a separate paper experiment for shadow"
-            )
-        return
-
+    # dry_run simulates fills and never reaches the broker — safe at any stage.
     if mode == "dry_run":
-        if exp.stage == "research":
-            raise PermissionError("stage research cannot dry_run")
-        if exp.stage == "live":
-            raise PermissionError("use preview or live mode on stage=live experiment")
         return
 
     if mode == "live":

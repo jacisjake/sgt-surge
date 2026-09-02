@@ -50,7 +50,7 @@ ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
 echo ""
 echo "Recent logs (errors / orders / signals):"
 ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
-  "podman logs --tail 80 ${CONTAINER} 2>&1 | grep -E '(ERROR|Error|Signal|Exit|Filled|order|ORB|breakout|paper_forward)' | tail -10" 2>/dev/null \
+  "podman logs --tail 80 ${CONTAINER} 2>&1 | grep -E '(ERROR|Error|Signal|Exit|Filled|order|ORB|breakout)' | tail -10" 2>/dev/null \
   || echo "  (no matching lines or ssh/podman failed)"
 
 echo ""

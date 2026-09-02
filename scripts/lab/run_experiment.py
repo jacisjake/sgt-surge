@@ -1,4 +1,4 @@
-"""CLI: python -m scripts.lab.run_experiment --id breakout_52w_paper"""
+"""CLI: python -m scripts.lab.run_experiment --id breakout_52w_live"""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run a registered lab experiment.")
     p.add_argument("--id", required=True, help="Experiment id from config/experiments.yaml")
     p.add_argument("--as-of", default=None, help="YYYY-MM-DD (default: last bar date)")
-    p.add_argument("--mode", default=None, help="Override mode: paper|live|backtest")
+    p.add_argument("--mode", default=None, help="Override mode: backtest|dry_run|live")
     p.add_argument("--preview", action="store_true", help="Plan only (live); no broker submits")
     p.add_argument("--live", action="store_true", help="Allow real submits when stage=live")
     p.add_argument("--config", default="config/experiments.yaml")

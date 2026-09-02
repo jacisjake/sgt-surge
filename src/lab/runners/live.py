@@ -52,14 +52,18 @@ def broker_to_views(
         meta = dict(audit_meta.get(sym) or {})
         entry_date = as_of
         if meta.get("entry_date"):
-            entry_date = date.fromisoformat(meta["entry_date"])
+            entry_date = date.fromisoformat(str(meta["entry_date"]))
+        if meta.get("initial_stop") is not None:
+            stop_price = float(meta["initial_stop"])
+        else:
+            stop_price = avg * (1 - stop_pct)
         views.append(
             PositionView(
                 symbol=sym,
                 qty=qty,
                 avg_entry_price=avg,
                 entry_date=entry_date,
-                stop_price=avg * (1 - stop_pct),
+                stop_price=stop_price,
                 notional=qty * avg,
                 metadata=meta,
             )
@@ -106,6 +110,12 @@ def run_live_day(
         if s.strip()
     ] if symbols_path.exists() else []
 
+    positions = client.get_positions()
+    for p in positions:
+        sym = str(p.get("symbol") or "").upper()
+        if sym and sym not in symbols:
+            symbols.append(sym)
+
     today_wall = as_of or date.today()
     fetch_start = today_wall - timedelta(days=(lookback + 30) * 2)
     bars: dict[str, pd.DataFrame] = {}
@@ -115,6 +125,7 @@ def run_live_day(
             bars[sym] = df
     if not bars:
         return {"ok": False, "error": "no bars", "preview": preview}
+
 
     session = as_of or max(df.index[-1].date() for df in bars.values())
 
@@ -137,8 +148,8 @@ def run_live_day(
         if spy is not None and not spy.empty:
             extras["SPY"] = spy
 
-    positions = client.get_positions()
     acct = client.get_account()
+
     equity = float(acct["equity"])
     cash = float(acct["buying_power"])
 
@@ -208,9 +219,12 @@ def run_live_day(
             meta[r["symbol"]] = {
                 "entry_date": session.isoformat(),
                 "strategy": exp.strategy,
+                "entry_price": r.get("price"),
+                "initial_stop": r.get("stop_price"),
             }
         if r.get("status") == "submitted" and r["action"] == "sell":
             audit.setdefault("position_meta", {}).pop(r["symbol"], None)
+
 
     audit["last_date"] = session.isoformat()
     audit["last_run_id"] = run_id

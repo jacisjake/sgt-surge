@@ -35,7 +35,7 @@ from src.bot.stream_handler import StreamHandler
 from src.core.schwab_client import SchwabClient
 from src.core.schwab_stream import SchwabStreamClient
 from src.core.order_executor import OrderExecutor
-from src.core.position_manager import PositionManager
+from src.core.position_manager import EXTERNAL_STRATEGY, PositionManager
 from src.risk.portfolio_limits import PortfolioLimits
 from src.risk.position_sizer import PositionSizer
 
@@ -753,9 +753,17 @@ class TradingBot:
         except Exception as e:
             logger.error(f"[EOD] Error cancelling orders: {e}")
 
-        # Close all open positions
+        # Close open positions this bot opened. Lots opened outside the bot
+        # (swing lots from scripts/live_swing.py, adopted via sync_with_broker)
+        # are multi-day holds and must survive the intraday flatten.
         positions = self.position_manager.get_open_positions()
         for position in positions:
+            if position.strategy == EXTERNAL_STRATEGY:
+                logger.info(
+                    f"[EOD] Skipping {position.symbol} — not ORB-owned "
+                    f"(strategy={position.strategy})"
+                )
+                continue
             logger.info(f"[EOD] Closing {position.symbol} ({position.qty} shares)")
             exec_result = await self.executor.execute_exit(
                 symbol=position.symbol,
@@ -963,8 +971,15 @@ class TradingBot:
         """Sync positions and account with broker."""
         try:
             account = self.client.get_account()
+            self._account_snapshot = account
             equity = float(account.get("equity", 0))
             buying_power = float(account.get("buying_power", 0))
+            try:
+                orders = self.client.get_orders(status="open")
+                if isinstance(orders, list):
+                    self._open_orders_snapshot = orders
+            except Exception:
+                pass
 
             # Update risk components
             self.portfolio_limits.update_equity(equity)
@@ -1009,10 +1024,17 @@ class TradingBot:
             logger.error(f"Broker sync error: {e}")
 
     async def _add_default_stops(self, symbol: str) -> None:
-        """Add default stop-loss and take-profit to a broker-synced position."""
+        """Add default stop-loss and take-profit to a broker-synced position.
+
+        No-op when ORB live is off — swing positions must not get 5-min ATR
+        take-profits that amputate the right tail.
+        """
+        if not bool(getattr(self.config, "enable_orb_live", False)):
+            return
         position = self.position_manager.get_position(symbol)
         if not position:
             return
+
 
         try:
             # Get 5-min bars to calculate ATR

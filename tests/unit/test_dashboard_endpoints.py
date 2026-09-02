@@ -79,6 +79,28 @@ def test_status_returns_account_when_authenticated(bot_app):
     assert body["enable_orb_live"] is False
 
 
+def test_status_serves_cached_account_without_broker_call(bot_app):
+    client, bot = bot_app
+    bot._account_snapshot = {
+        "equity": 195.0, "buying_power": 1.6, "cash": 1.6,
+        "daytrade_count": 0, "is_pdt": False, "type": "CASH", "status": "active",
+        "_raw_positions": [],
+    }
+    r = client.get("/api/status")
+    assert r.json()["account"]["equity"] == 195.0
+    bot.client.get_account.assert_not_called()
+
+
+def test_open_orders_serves_cached_orders_without_broker_call(bot_app):
+    client, bot = bot_app
+    bot._open_orders_snapshot = [
+        {"symbol": "PGEN", "qty": 0.215, "status": "pending_activation"},
+    ]
+    r = client.get("/api/orders")
+    assert r.json()[0]["symbol"] == "PGEN"
+    bot.client.get_orders.assert_not_called()
+
+
 def test_status_returns_setup_mode_when_unauthenticated():
     bot = MagicMock()
     bot.client.is_authenticated = False
@@ -88,18 +110,30 @@ def test_status_returns_setup_mode_when_unauthenticated():
     assert r.json()["mode"] == "setup"
 
 
-def test_dashboard_html_is_lab_centric(bot_app):
+def test_dashboard_html_is_live_ops_not_paper(bot_app):
     client, _ = bot_app
     r = client.get("/")
     assert r.status_code == 200
-    # Trading Lab framing; paper experiment + broker panels; no ORB table.
-    assert "Trading Lab" in r.text
-    assert "breakout_52w" in r.text
-    assert "Broker positions" in r.text and "Open orders" in r.text
-    assert "Lab paper" in r.text or "paper-scoreboard" in r.text
-    assert "Today's tape" in r.text or "edu-plays" in r.text
-    assert 'id="orb-table"' not in r.text
-    assert "enable_orb_live" in r.text or "ORB money" in r.text
+    html = r.text
+    assert "#04040b" in html
+    assert 'id="k-eq"' in html and 'id="k-day"' in html
+    assert 'id="book-table"' in html
+    assert 'id="swing-table"' in html
+    assert 'id="scanner"' in html
+    assert 'id="tape"' in html
+    assert "Live <em>book</em>" not in html
+    assert 'id="paper-scoreboard"' not in html
+    assert "Lab paper" not in html
+    assert 'id="orb-table"' not in html
+    assert "ORB money" in html
+
+
+
+def test_paper_page_is_gone(bot_app):
+    """The paper surface was removed — one system only."""
+    client, _ = bot_app
+    assert client.get("/paper").status_code == 404
+
 
 
 def test_education_endpoint_missing_file(bot_app, tmp_path):
@@ -108,6 +142,20 @@ def test_education_endpoint_missing_file(bot_app, tmp_path):
     r = client.get("/api/education")
     assert r.status_code == 200
     assert r.json()["exists"] is False
+
+
+def test_ops_endpoint_reads_last_live_run(bot_app, tmp_path):
+    client, bot = bot_app
+    bot.config.state_dir = str(tmp_path)
+    (tmp_path / "live_swing_last.json").write_text(
+        '{"date":"2026-08-18","preview":false,"plan":[{"symbol":"ATAI","action":"buy"}]}'
+    )
+    (tmp_path / "universes").mkdir()
+    (tmp_path / "universes" / "live.txt").write_text("ATAI ET NVDA\n")
+    body = client.get("/api/ops").json()
+    assert body["last_live_swing"]["plan"][0]["symbol"] == "ATAI"
+    assert body["universe"]["n"] == 3
+
 
 
 def test_education_endpoint_reads_brief(bot_app, tmp_path):
@@ -165,35 +213,7 @@ def test_bars_single_symbol_returns_full_ohlcv(bot_app):
     assert body["bars"][0]["v"] == 1000
 
 
-def test_paper_forward_reads_ledger_and_computes_stats(bot_app, tmp_path):
-    client, bot = bot_app
-    ledger = {
-        "starting_equity": 200.0, "realized_pnl": 12.5, "last_date": "2026-06-15",
-        "open_positions": [{"symbol": "TGT", "entry_date": "2026-06-12",
-                            "entry_price": 135.0, "stop_price": 124.0, "notional": 25.0}],
-        "closed_trades": [{"symbol": "IWM", "entry_date": "2026-06-10",
-                           "exit_date": "2026-06-13", "entry_price": 290.0,
-                           "exit_price": 305.0, "pnl": 12.5, "reason": "trend_break"}],
-    }
-    (tmp_path / "swing_paper_breakout.json").write_text(__import__("json").dumps(ledger))
-    bot.config.state_dir = str(tmp_path)
-
-    r = client.get("/api/paper")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["exists"] is True
-    assert body["equity"] == 212.5
-    assert round(body["total_return"], 5) == round(12.5 / 200, 5)
-    assert body["n_open"] == 1 and body["n_closed"] == 1
-    assert body["win_rate"] == 1.0
-    assert body["open_positions"][0]["symbol"] == "TGT"
-    assert body["closed_trades"][0]["reason"] == "trend_break"
-    assert body["experiment_id"] == "breakout_52w_paper"
-    assert "scoreboard" in body
-    assert "stale" in body
-
-
-def test_compare_returns_orb_and_paper_edge_metrics(bot_app, tmp_path):
+def test_compare_returns_orb_edge_metrics(bot_app, tmp_path):
     client, bot = bot_app
     # ORB live ledger: one +10% winner, one -5% loser.
     bot.trade_ledger.get_trades.return_value = [
@@ -201,16 +221,6 @@ def test_compare_returns_orb_and_paper_edge_metrics(bot_app, tmp_path):
         {"symbol": "MSFT", "entry_price": 20.0, "exit_price": 19.0},
     ]
     bot.trade_ledger.get_total_realized_pnl.return_value = 3.21
-    # Paper breakout_52w ledger: two closed trades.
-    ledger = {
-        "starting_equity": 200.0, "realized_pnl": -6.41,
-        "open_positions": [],
-        "closed_trades": [
-            {"symbol": "AMD", "entry_price": 100.0, "exit_price": 92.0, "pnl": -2.1, "reason": "stop"},
-            {"symbol": "GS", "entry_price": 100.0, "exit_price": 110.0, "pnl": 10.0, "reason": "trend_break"},
-        ],
-    }
-    (tmp_path / "swing_paper_breakout.json").write_text(__import__("json").dumps(ledger))
     bot.config.state_dir = str(tmp_path)
 
     r = client.get("/api/compare")
@@ -221,27 +231,23 @@ def test_compare_returns_orb_and_paper_edge_metrics(bot_app, tmp_path):
     assert body["orb"]["win_rate"] == 0.5
     assert body["orb"]["realized_pnl"] == 3.21
     assert body["orb"]["account_equity"] == 270.0  # from get_account mock
-
-    assert body["paper"]["n_closed"] == 2
-    assert body["paper"]["win_rate"] == 0.5
-    assert body["paper"]["realized_pnl"] == -6.41
+    assert "paper" not in body
 
 
-def test_compare_handles_empty_ledgers(bot_app, tmp_path):
+def test_compare_handles_empty_ledger(bot_app, tmp_path):
     client, bot = bot_app
     bot.trade_ledger.get_trades.return_value = []
     bot.trade_ledger.get_total_realized_pnl.return_value = 0.0
-    bot.config.state_dir = str(tmp_path)  # no paper ledger file
+    bot.config.state_dir = str(tmp_path)
 
     body = client.get("/api/compare").json()
     assert body["orb"]["n_closed"] == 0
-    assert body["paper"]["n_closed"] == 0
 
 
-def test_paper_forward_missing_ledger_returns_not_exists(bot_app, tmp_path):
+def test_paper_api_is_gone(bot_app, tmp_path):
     client, bot = bot_app
-    bot.config.state_dir = str(tmp_path)  # no ledger file present
-    assert client.get("/api/paper").json() == {"exists": False}
+    bot.config.state_dir = str(tmp_path)
+    assert client.get("/api/paper").status_code == 404
 
 
 def test_bars_symbol_with_empty_buffer_returns_empty(bot_app):
@@ -256,7 +262,7 @@ def test_bars_symbol_with_empty_buffer_returns_empty(bot_app):
 
 
 def test_dashboard_shows_position_value_and_total(bot_app):
-    """Per-position market value + a deployed total.
+    """Per-position market value + a deployed KPI.
 
     Eight ~$25 positions summing to the whole account is invisible when the
     table only shows qty and price; the total is what makes it obvious.
@@ -265,4 +271,5 @@ def test_dashboard_shows_position_value_and_total(bot_app):
     r = client.get("/")
     assert r.status_code == 200
     assert "<th>Value</th>" in r.text
-    assert 'id="pos-total"' in r.text
+    assert 'id="k-deployed"' in r.text
+    assert 'id="k-lots"' in r.text

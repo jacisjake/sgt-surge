@@ -1,72 +1,33 @@
-"""Soft promotion metrics from paper ledgers (realized equity only)."""
+"""Soft promotion metrics read from a validated backtest report."""
 from __future__ import annotations
 
 from typing import Any
 
 
-def max_drawdown_realized(state: dict) -> float:
-    """Peak-to-trough drawdown on realized equity path (0..1)."""
-    start = float(state.get("starting_equity", 0.0))
-    curve = state.get("equity_curve_daily") or []
-    if curve:
-        equities = [float(r["equity_realized"]) for r in curve]
-    else:
-        # Fall back: starting + cumulative closed trade pnl path
-        equities = [start]
-        eq = start
-        for t in state.get("closed_trades") or []:
-            eq += float(t.get("pnl", 0.0))
-            equities.append(eq)
-    peak = equities[0] if equities else start
-    max_dd = 0.0
-    for e in equities:
-        peak = max(peak, e)
-        if peak > 0:
-            max_dd = max(max_dd, (peak - e) / peak)
-    return max_dd
+def evaluate_soft_gates(report: dict, gates: dict[str, Any]) -> dict[str, Any]:
+    """Return check result with pass/fail per soft gate.
 
-
-def expectancy_per_trade(state: dict) -> float | None:
-    trades = state.get("closed_trades") or []
-    if not trades:
-        return None
-    return sum(float(t.get("pnl", 0.0)) for t in trades) / len(trades)
-
-
-def paper_trading_days(state: dict) -> int:
-    """Count distinct sessions advanced (equity curve or last_date proxy)."""
-    curve = state.get("equity_curve_daily") or []
-    if curve:
-        return len(curve)
-    if state.get("last_date"):
-        return 1
-    return 0
-
-
-def evaluate_soft_gates(state: dict, gates: dict[str, Any]) -> dict[str, Any]:
-    """Return check result with pass/fail per soft gate."""
-    min_days = int(gates.get("min_paper_trading_days", 40))
+    *report* is a backtest report as written by
+    ``src.lab.runners.backtest.write_report_from_backtest`` — its ``metrics``
+    block carries ``n_taken``, ``max_drawdown`` and ``expectancy``.
+    """
     min_trades = int(gates.get("min_closed_trades", 15))
-    max_dd = float(gates.get("max_paper_drawdown", 0.20))
+    max_dd = float(gates.get("max_drawdown", 0.20))
     require_pos = bool(gates.get("require_positive_expectancy", True))
 
-    n_days = paper_trading_days(state)
-    n_closed = len(state.get("closed_trades") or [])
-    dd = max_drawdown_realized(state)
-    exp = expectancy_per_trade(state)
+    metrics = report.get("metrics") or {}
+    n_taken = int(metrics.get("n_taken", 0) or 0)
+    dd = float(metrics.get("max_drawdown", 0.0) or 0.0)
+    exp = metrics.get("expectancy")
+    exp = float(exp) if exp is not None else None
 
     checks = {
-        "min_paper_trading_days": {
-            "required": min_days,
-            "actual": n_days,
-            "ok": n_days >= min_days,
-        },
         "min_closed_trades": {
             "required": min_trades,
-            "actual": n_closed,
-            "ok": n_closed >= min_trades,
+            "actual": n_taken,
+            "ok": n_taken >= min_trades,
         },
-        "max_paper_drawdown": {
+        "max_drawdown": {
             "required": max_dd,
             "actual": dd,
             "ok": dd <= max_dd,

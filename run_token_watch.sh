@@ -12,7 +12,7 @@
 # surprise, not to prevent it.
 #
 # NOTE: lives at the repo root so deploy-remote.sh's `rsync --delete` preserves
-# it, matching run_paper_forward.sh.
+# it.
 set -euo pipefail
 
 echo "===== $(date '+%Y-%m-%d %H:%M %Z') ====="
