@@ -169,6 +169,29 @@ def check_live_gate(experiment_id, *, trading_mode, enable_orb_live,
     return None
 
 
+MARKET_CLOSE_ET = dt.time(16, 0)
+
+
+def resolve_session(bars_by_symbol, *, now_et=None, as_of=None):
+    """Return the last COMPLETE daily session to plan on.
+
+    Schwab publishes a bar for the current session as soon as it opens, with
+    ``close`` holding the live price. Planning on that evaluates a breakout
+    against an unfinished bar, so it is dropped until the session has closed.
+    Returns None when nothing complete is available.
+    """
+    if as_of is not None:
+        return as_of
+    dates = sorted({ts.date() for df in bars_by_symbol.values() for ts in df.index})
+    if not dates:
+        return None
+    now_et = now_et or dt.datetime.now()
+    today = now_et.date()
+    if dates[-1] == today and now_et.time() < MARKET_CLOSE_ET:
+        return dates[-2] if len(dates) > 1 else None
+    return dates[-1]
+
+
 def reconcile_fill_prices(position_meta, broker_positions, *, tol: float = 1e-6) -> list[dict]:
     """Rewrite audit entry/stop from the broker's actual average fill.
 
@@ -363,7 +386,11 @@ def _run(args) -> int:
     if not bars:
         print("No bars fetched — nothing to do.")
         return 1
-    today = max(df.index[-1].date() for df in bars.values())
+    as_of = dt.date.fromisoformat(args.as_of) if args.as_of else None
+    today = resolve_session(bars, as_of=as_of)
+    if today is None:
+        print("No complete daily bar available yet — nothing to plan on.")
+        return 1
 
     acct = client.get_account()
     equity, cash = float(acct["equity"]), float(acct["buying_power"])
@@ -525,6 +552,8 @@ def main(argv=None) -> int:
     ap.add_argument("--k2", type=float, default=3.0)
     ap.add_argument("--atr-period", type=int, default=14)
     ap.add_argument("--use-ma-exit", action="store_true")
+    ap.add_argument("--as-of", default=None,
+                    help="plan on this session (YYYY-MM-DD) instead of the last complete one")
     ap.add_argument("--reconcile-empty", action="store_true",
                     help="allow reconciling the whole book when the broker reports "
                          "zero positions (confirm the account is really flat)")
