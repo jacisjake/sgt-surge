@@ -129,6 +129,21 @@ def execute_plan(plan: list[dict], executor) -> list[dict]:
     return results
 
 
+def apply_gate_to_plan(plan, *, gated: bool):
+    """Split a plan into (allowed, blocked) when the promote gate refuses.
+
+    A refused gate blocks NEW RISK, never an exit. Returning early on a gate
+    refusal would leave open positions with no stop execution — the fractional
+    book carries no resting broker stops, so this script is the only thing
+    that closes a losing position.
+    """
+    if not gated:
+        return list(plan), []
+    allowed = [o for o in plan if o.get("action") == "sell"]
+    blocked = [o for o in plan if o.get("action") != "sell"]
+    return allowed, blocked
+
+
 def check_live_gate(experiment_id, *, trading_mode, enable_orb_live,
                     git_path="config/experiments.yaml",
                     override_path="state/experiments/overrides.yaml"):
@@ -374,11 +389,24 @@ def _run(args) -> int:
         trading_mode=cfg.trading_mode.value,
         enable_orb_live=bool(cfg.enable_orb_live),
     )
-    if gate and not args.ignore_gate:
-        print(f"\nRefusing --live: promote gate says {gate}")
-        print("Promote the experiment, or pass --ignore-gate --gate-reason '...' "
-              "to override deliberately.")
-        return 1
+    gated = bool(gate) and not args.ignore_gate
+    if gated:
+        plan, blocked = apply_gate_to_plan(plan, gated=True)
+        print(f"\n[GATE] promote gate says {gate}")
+        print(f"[GATE] blocking {len(blocked)} new entr"
+              f"{'y' if len(blocked) == 1 else 'ies'}; exits still run so open "
+              f"positions keep their stops.")
+        for o in blocked:
+            print(f"         BLOCKED buy {o['qty']:.4f} {o['symbol']}")
+        print("[GATE] Promote the experiment, or pass --ignore-gate "
+              "--gate-reason '...' to allow entries.")
+        if not plan:
+            print("\nNothing left to place.")
+            snapshot["preview"] = False
+            snapshot["results"] = []
+            snapshot["gate_blocked"] = blocked
+            write_json(last_path, snapshot)
+            return 0
     if gate and args.ignore_gate:
         if not args.gate_reason:
             print("\nRefusing --live: --ignore-gate requires --gate-reason.")

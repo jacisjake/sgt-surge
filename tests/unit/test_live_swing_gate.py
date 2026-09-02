@@ -79,3 +79,36 @@ def test_gate_refuses_the_real_registry_today(tmp_path):
                              git_path="config/experiments.yaml",
                              override_path=str(tmp_path / "none.yaml"))
     assert reason is not None
+
+
+# ── a refused gate must still let positions exit ───────────────────────────
+
+def test_gate_refusal_still_permits_exits():
+    """Blocking new risk must never trap an open position without its stop."""
+    from scripts.live_swing import apply_gate_to_plan
+
+    plan = [
+        {"action": "sell", "symbol": "FRSH", "qty": 1.8, "reason": "stop"},
+        {"action": "buy", "symbol": "NEW", "qty": 2.0, "reason": "fresh_breakout"},
+    ]
+    allowed, blocked = apply_gate_to_plan(plan, gated=True)
+    assert [o["symbol"] for o in allowed] == ["FRSH"]
+    assert [o["symbol"] for o in blocked] == ["NEW"]
+
+
+def test_ungated_plan_passes_through_untouched():
+    from scripts.live_swing import apply_gate_to_plan
+
+    plan = [{"action": "buy", "symbol": "NEW", "qty": 2.0, "reason": "fresh_breakout"}]
+    allowed, blocked = apply_gate_to_plan(plan, gated=False)
+    assert allowed == plan
+    assert blocked == []
+
+
+def test_gated_plan_with_only_buys_allows_nothing():
+    from scripts.live_swing import apply_gate_to_plan
+
+    plan = [{"action": "buy", "symbol": "A", "qty": 1.0, "reason": "fresh_breakout"}]
+    allowed, blocked = apply_gate_to_plan(plan, gated=True)
+    assert allowed == []
+    assert len(blocked) == 1
