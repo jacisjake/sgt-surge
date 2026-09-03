@@ -223,6 +223,96 @@ def test_cumulative_planned_notional_never_exceeds_available_cash():
     assert total <= 100.0, f"planned total {total} exceeds available cash 100.0"
 
 
+def test_buy_sized_down_to_max_position_pct():
+    """Tight stop must not let risk-sizing push one name past the position cap."""
+    intents = [
+        OrderIntent(
+            symbol="AAA",
+            side=Side.BUY,
+            reason="breakout",
+            stop_price=90.0,  # 10% stop distance
+            risk_pct=0.5,  # risk-based notional (5000) far exceeds any cap
+        )
+    ]
+    plan = intents_to_live_plan(
+        intents,
+        equity=1000.0,
+        available_cash=10_000.0,
+        stop_pct=0.08,
+        prices={"AAA": 100.0},
+        cash_buffer_pct=0.0,
+        max_position_pct=0.15,
+    )
+    buys = [o for o in plan if o["action"] == "buy"]
+    assert len(buys) == 1
+    assert buys[0]["notional"] <= 150.0, (
+        f"planned notional {buys[0]['notional']} exceeds 15% of equity (150.0)"
+    )
+
+
+def test_second_buy_sized_down_to_remaining_exposure_headroom():
+    """Aggregate invested capital must not exceed max_exposure_pct of equity."""
+    plan = intents_to_live_plan(
+        [_buy("AAA", 0.06), _buy("BBB", 0.06)],  # each wants $600 pre-cap
+        equity=1000.0,
+        available_cash=100_000.0,
+        stop_pct=0.08,
+        prices={"AAA": 6.0, "BBB": 6.0},
+        cash_buffer_pct=0.0,
+        max_position_pct=1.0,  # isolate the aggregate cap from the per-position cap
+        max_exposure_pct=0.85,
+    )
+    buys = [o for o in plan if o["action"] == "buy"]
+    assert len(buys) == 2
+    assert buys[0]["notional"] == pytest.approx(600.0, abs=1.0)
+    assert buys[1]["notional"] <= 250.0, (
+        f"second buy {buys[1]['notional']} exceeds remaining headroom (250.0)"
+    )
+
+
+def test_buy_skipped_when_existing_notional_leaves_no_exposure_headroom():
+    """Existing holdings already near the exposure cap must block new entries."""
+    plan = intents_to_live_plan(
+        [_buy("AAA", 0.06)],
+        equity=1000.0,
+        available_cash=100_000.0,
+        stop_pct=0.08,
+        prices={"AAA": 6.0},
+        cash_buffer_pct=0.0,
+        max_exposure_pct=0.85,
+        existing_notional=849.5,  # headroom = 0.5, below the $1 sizing floor
+    )
+    buys = [o for o in plan if o["action"] == "buy"]
+    assert buys == [], f"exhausted exposure headroom should plan no entry, got {buys}"
+
+
+def test_run_live_day_seeds_exposure_cap_from_existing_positions(tmp_path):
+    """Held positions must count against the exposure cap, not just new buys."""
+    reg = _reg(tmp_path, stage="live", mode="live")
+    exp = reg["live_x"]
+    n = 6
+    df = pd.DataFrame(
+        {
+            "open": [10.0] * n,
+            "high": [11] * (n - 1) + [20.0],
+            "low": [9.0] * n,
+            "close": [10.0] * (n - 1) + [20.0],
+        },
+        index=pd.date_range("2024-01-01", periods=n, freq="D"),
+    )
+    client = MagicMock()
+    client.get_history.side_effect = lambda sym, *a, **k: df if sym == "AAA" else pd.DataFrame()
+    # ZZZ already eats 170 of a 200-equity account -> 85% cap (170) leaves no headroom.
+    client.get_positions.return_value = [
+        {"symbol": "ZZZ", "qty": 10.0, "avg_entry_price": 17.0},
+    ]
+    client.get_account.return_value = {"equity": 200.0, "buying_power": 200.0}
+    executor = MagicMock()
+    out = run_live_day(exp, client, executor, reg, preview=True, trading_mode="live")
+    buys = [o for o in out["plan"] if o["action"] == "buy"]
+    assert buys == [], f"no exposure headroom should plan no entry, got {buys}"
+
+
 def test_broker_to_views_uses_stored_entry_date_and_initial_stop():
     as_of = datetime.date(2026, 8, 18)
     views = broker_to_views(

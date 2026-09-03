@@ -96,6 +96,8 @@ def run_live_day(
     lookback = int(params.get("lookback", 252))
     stop_pct = float(params.get("stop_pct", 0.08))
     risk_pct = float(params.get("risk_pct", 0.01))
+    max_position_pct = float(params.get("max_position_pct", 0.15))
+    max_exposure_pct = float(params.get("max_exposure_pct", 0.85))
     use_regime_gate = bool(params.get("use_regime_gate", True))
     regime_sma = int(params.get("regime_sma", 200))
 
@@ -180,6 +182,9 @@ def run_live_day(
         stop_pct=stop_pct,
         prices=prices,
         risk_pct_default=risk_pct,
+        max_position_pct=max_position_pct,
+        max_exposure_pct=max_exposure_pct,
+        existing_notional=sum(p.notional or 0.0 for p in portfolio.positions),
     )
 
     result: dict[str, Any] = {

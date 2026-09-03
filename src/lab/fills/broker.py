@@ -16,14 +16,26 @@ def intents_to_live_plan(
     prices: dict[str, float],
     risk_pct_default: float = 0.01,
     cash_buffer_pct: float = 0.01,
+    max_position_pct: float = 0.15,
+    max_exposure_pct: float = 0.85,
+    existing_notional: float = 0.0,
 ) -> list[dict]:
     """Convert intents to live_swing-style order dicts with cash sizing.
 
     ``cash_buffer_pct`` holds back a slice of available cash so a market fill
     that prints above the planning price cannot overdraw the account.
+
+    ``max_position_pct`` caps any single new position at that fraction of
+    equity, and ``max_exposure_pct`` caps total invested capital (existing
+    holdings, via ``existing_notional``, plus everything planned so far) at
+    that fraction of equity. Risk-based sizing alone can put an outsized
+    share of the account into one name when its stop is tight; both caps
+    size the order down rather than skip it, since the entry signal is
+    still valid, just not at that size.
     """
     plan: list[dict] = []
     cash = available_cash
+    invested = existing_notional
     for intent in order_exits_before_entries(intents):
         price = float(prices.get(intent.symbol) or intent.metadata.get("entry_price") or 0)
         if intent.side == Side.SELL:
@@ -51,7 +63,13 @@ def intents_to_live_plan(
             else:
                 stop_frac = stop_pct
             spendable = cash * (1.0 - cash_buffer_pct)
-            notional = min(risk_pct * equity / stop_frac, spendable)
+            exposure_headroom = max(0.0, max_exposure_pct * equity - invested)
+            notional = min(
+                risk_pct * equity / stop_frac,
+                spendable,
+                max_position_pct * equity,
+                exposure_headroom,
+            )
             if notional < 1.0:
                 continue
             # Floor rather than round to the fractional-share precision:
@@ -75,8 +93,10 @@ def intents_to_live_plan(
             })
 
             # Decrement by what is actually planned, not the pre-rounding
-            # figure, so remaining cash stays accurate across orders.
+            # figure, so remaining cash and exposure stay accurate across
+            # orders.
             cash -= actual_notional
+            invested += actual_notional
     return plan
 
 
